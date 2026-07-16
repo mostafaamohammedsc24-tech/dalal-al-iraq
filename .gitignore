@@ -1,0 +1,14 @@
+node_modules
+
+# Local build artifacts
+node_modules
+.vite
+dist
+dalal-app/dist
+dalal-app/.tsbuildinfo
+api-server/.tsbuildinfo
+lib/db/tsconfig.tsbuildinfo
+lib/api-zod/tsconfig.tsbuildinfo
+lib/api-client-react/tsconfig.tsbuildinfo
+scripts/tsconfig.tsbuildinfo
+*.tsbuildinfo

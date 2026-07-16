@@ -1,0 +1,20 @@
+[Unit]
+Description=Dalal Al Iraq API server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lofydono2002/Dalal Al Iraq/Dalal-al-iraq
+Environment=NODE_ENV=production
+Environment=PORT=8080
+Environment=DATABASE_URL=postgresql://dalal_user:dalal_password@localhost:5433/dalal_al_iraq
+Environment=SESSION_SECRET=replace_with_a_strong_random_secret
+ExecStart=/bin/bash -lc 'cd /home/lofydono2002/Dalal Al Iraq/Dalal-al-iraq && /usr/bin/env pnpm --filter @workspace/api-server run start'
+Restart=on-failure
+RestartSec=5s
+User=www-data
+Group=www-data
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

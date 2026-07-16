@@ -1,0 +1,3 @@
+- [GitHub-imported pnpm workspace path drift](pnpm-workspace-import-drift.md) — when a repo was exported from Replit's `artifacts/*` layout and re-imported flat, workspace/tsconfig paths break silently.
+- [Dalal Al-Iraq: multi-role account IDs](dalal-iraq-network-accounts.md) — office/lawyer accounts use admin-issued sequential IDs (OF-/LW-) as login username, not phone; see nextSequentialId helper.
+- [Design subagent scaffold assumption](design-subagent-scaffold-assumption.md) — the `design` skill's subagent assumes a generated api-client-react hooks scaffold; hand-rolled Vite apps with a plain fetch wrapper don't fit and should be built directly instead.

@@ -1,0 +1,244 @@
+# __REPLIT_ARTIFACT_TITLE__ design system
+
+This package defines the visual language for the project. Use it whenever you
+build or restyle UI so every surface looks like the same product. It is a real
+workspace package (`__REPLIT_ARTIFACT_PACKAGE_NAME__`): other artifacts depend
+on it and import its theme and components directly.
+
+## What's here
+
+- `tokens.json` — the single source of truth (DTCG format): colors (full light
+  and dark sets), typography, spacing, and radius.
+- `scripts/build-tokens.mjs` — generates the outputs below from `tokens.json`.
+- `src/index.css` — GENERATED shadcn theme (web), exported as `./styles.css`.
+- `src/generated/tokens.tsx` — GENERATED hex token object, the package's `.` and
+  `./tokens` entry. Mobile (Expo) and other platforms import this.
+- `public/favicon.svg` — GENERATED app icon from `tokens.json` + the title.
+- `src/components/ui/` — the shadcn component library, themed by the tokens,
+  exported as `./components/*`.
+- `src/lib/` (`cn`) and `src/hooks/` — exported as `./lib/*` and `./hooks/*`.
+- `src/App.tsx` — a living style guide that previews the tokens and components.
+
+Every source file in this package is a `.tsx` file (even token/util/hook
+modules with no JSX), so every export below is a single `*.tsx` glob. Do not
+add `.ts` files here.
+
+## What this package exports
+
+```jsonc
+".":             "./src/generated/tokens.tsx",  // portable hex tokens
+"./tokens":      "./src/generated/tokens.tsx",
+"./styles.css":  "./src/index.css",             // the web theme
+"./components/*":"./src/components/*.tsx",       // e.g. .../components/ui/button
+"./lib/*":       "./src/lib/*.tsx",             // e.g. .../lib/utils  (cn)
+"./hooks/*":     "./src/hooks/*.tsx"
+```
+
+Components import each other with **relative** paths internally, so they resolve
+correctly when another package imports them through
+`__REPLIT_ARTIFACT_PACKAGE_NAME__/components/...` — never use a `@/` alias inside
+this package, since a consuming app has no `@/` mapping to this package's `src`.
+If you add components with `shadcn add`, the generated imports use this package's
+`#`-prefixed subpath imports (`#components/*`, `#lib/*`, `#hooks/*` in
+`package.json` `imports`); those resolve against this package regardless of who
+imports the file, so they are consumer-safe. `@/` is not configured.
+
+## Prototyping with this design system on the canvas
+
+To mock up or prototype UI against this design system on the workspace canvas,
+use the mockup-sandbox skill's "Design systems" flow: it wires a sandbox entry
+for `__REPLIT_ARTIFACT_PACKAGE_NAME__` and renders mockups that import this
+package's theme and components, so previews match the real product.
+
+## Editing the design system
+
+Edit `tokens.json` ONLY, then run `pnpm tokens` (the dev server also
+regenerates on change). `src/index.css` and `src/generated/tokens.tsx` are
+generated — never hand-edit them. If you add a component beyond the default set,
+put it under `src/components/ui/`, theme it only with the token CSS vars, preview
+it in `src/App.tsx`, and note it in "What's here" above.
+
+---
+
+# Consuming this design system
+
+Any app that uses this design system follows these steps — a brand-new
+`react-vite` artifact you are about to build, a sibling artifact, the repl's main
+app, or an Expo app. This is not only for pre-existing apps: a freshly scaffolded
+app ships its own ad-hoc component library too, so consume the design system
+before authoring UI rather than building against the scaffold's copies and
+cleaning up later.
+
+First check whether this package ships components for your artifact's framework
+(React, Expo, etc.). If it does, use those components immediately and replace the
+app's current components with them. If it does not, use the tokens this package
+exports as the source of truth for your color/theme tokens and migrate the app's
+token references to them. The token step (step 1) applies to every consumer; the
+component-replacement steps (steps 2, 4, 5) apply only where this package
+provides components for your framework.
+
+**Both web and Expo consume this as
+a workspace package** — add the `workspace:*` dependency (step 3) and import from
+`__REPLIT_ARTIFACT_PACKAGE_NAME__`. Do not copy token values or component source
+into the app. Do the steps in order.
+
+## 1. Consume the tokens
+
+- **Web (react-vite / Vite app):** this package's `styles.css` is the app's
+  single source of styling — it **already pulls in Tailwind itself** (it begins
+  with `@import "tailwindcss";` plus the theme's plugins) and adds the token
+  theme on top. So the app must import it *instead of*, not in addition to, its
+  own Tailwind setup, or Tailwind gets imported twice.
+
+  Replace the contents of the app's main CSS (e.g. `src/index.css`) so it imports
+  this package's theme once:
+  ```css
+  @import "__REPLIT_ARTIFACT_PACKAGE_NAME__/styles.css";
+  ```
+  - **Remove the app's own `@import "tailwindcss";`** (and any `@plugin` /
+    `tw-animate-css` imports) — they now come transitively through
+    `styles.css`; keeping them double-imports Tailwind.
+  - **Remove the app's old theme block** (the `:root` / `.dark` token
+    definitions) so there is exactly one source of theme variables.
+  - Keep app-specific custom CSS (non-theme rules) below these lines.
+
+  This package's `styles.css` **registers its own component sources** (it ends
+  with `@source "./components"`), so Tailwind generates the utility classes the
+  imported components use without the app adding any `../node_modules/...` path —
+  Tailwind resolves that `@source` relative to the package file. (Tailwind v3
+  consumers don't chain `@import "tailwindcss"`, so they instead add
+  `node_modules/__REPLIT_ARTIFACT_PACKAGE_NAME__/src/components` to `content` in
+  `tailwind.config` and keep their existing `@tailwind` directives — only v4
+  `styles.css` brings Tailwind and the source registration along.)
+- **Mobile (Expo):** React Native has no CSS, so consume the portable token
+  object instead of the web theme. Import the hex tokens and drive the app's
+  theme from them (e.g. `constants/colors.ts`):
+  ```ts
+  import { tokens } from "__REPLIT_ARTIFACT_PACKAGE_NAME__/tokens";
+  // tokens.color.light / tokens.color.dark / tokens.radius / tokens.fontFamily
+  ```
+  Metro (Expo SDK 54+) resolves `workspace:*` packages through the pnpm symlink
+  by default — the Expo artifact already declares `@workspace/*` deps — so import
+  the package, don't copy values. The web `styles.css` and `components/ui` are
+  DOM/Tailwind and do not apply to React Native; only the token object crosses
+  over. (Loose binary assets like images still need copying — Metro's default
+  config doesn't watch sibling artifact folders — but that's unrelated to tokens.)
+
+## 2. Import components via the workspace dependency
+
+New Replit apps ship a full shadcn component library under `src/components/ui/`.
+This design system ships that same library, themed by the tokens, so it **fully
+supersedes the app's shipped `src/components/ui/`** — the app should consume the
+package's components instead of keeping its own copies. Rewrite the target app's
+component imports to point at this package; do not copy component source into the
+app:
+
+```ts
+// before (app's own copy)
+import { Button } from "@/components/ui/button";
+// after (this design system)
+import { Button } from "__REPLIT_ARTIFACT_PACKAGE_NAME__/components/ui/button";
+import { cn } from "__REPLIT_ARTIFACT_PACKAGE_NAME__/lib/utils";
+import { useToast, toast } from "__REPLIT_ARTIFACT_PACKAGE_NAME__/hooks/use-toast";
+```
+
+Rewrite every import of a module this package provides — each `@/components/ui/*`
+for a **provided** component (match by filename against this package's
+`components/ui/`), plus `@/lib/utils` (`cn`) **and `@/hooks/use-toast`** — to the
+package path. Leave imports of genuinely app-specific components this package does
+NOT provide pointing at the app's local copy. The goal is that nothing imports a
+package-provided module from the app's local `src/components/ui/`, `src/lib/utils`,
+or `src/hooks/use-toast` anymore. The `use-toast` rewrite matters: this package's `Toaster` subscribes to
+*its own* `hooks/use-toast` store, so if the app keeps calling `toast()` from its
+local hook while rendering the packaged `Toaster`, the toast goes to a different
+in-memory store and never renders. The only components that stay in the app are
+genuinely app-specific ones this package does NOT provide (and if such a
+component belongs in the shared system, add it to the package first, then import
+it from there too).
+
+## 3. Hook up package dependencies
+
+- Add the workspace dependency to the target app's `package.json`:
+  ```jsonc
+  "__REPLIT_ARTIFACT_PACKAGE_NAME__": "workspace:*"
+  ```
+  Put it in `devDependencies` for a static/Vite app, or `dependencies` for a
+  server/runtime app (follow the `pnpm-workspace` skill's rule).
+- This package declares its component runtime deps (Radix, `class-variance-
+  authority`, `clsx`, `tailwind-merge`, `lucide-react`, …) in `dependencies`, so
+  pnpm installs them transitively for the consumer — the app does not need to
+  re-list them. `react` / `react-dom` are peer deps the app already provides.
+- Run `pnpm install` so the workspace symlink and transitive deps are wired up.
+
+## 4. Test the connection before migrating everything
+
+Prove resolution works end-to-end on ONE component before mass-rewriting:
+
+1. Wire the dependency (step 3) and import the theme (step 1).
+2. In one screen, import a single primitive
+   (`__REPLIT_ARTIFACT_PACKAGE_NAME__/components/ui/button`) and render it.
+3. Run the app's typecheck and dev server. The import must resolve and the button
+   must pick up the design-system theme.
+
+If resolution fails, check: the `workspace:*` dep is present and `pnpm install`
+ran; you imported the package subpath (not a local `@/` path); and the theme CSS
+is imported once at the entry. Only proceed to rewrite the rest once this works.
+
+## 5. Delete the app's shipped component library
+
+Once every import points at the package (step 2), the app's local copies of
+components this package provides are dead weight that duplicates the design
+system. Remove them — do not leave the old copies behind:
+
+- **Delete every file in the app's `src/components/ui/` that this package
+  provides.** The package's `components/ui/` is the authoritative set — match by
+  filename. Because a scaffolded app ships the same component set this package
+  themes, this usually empties the directory; delete the directory itself once
+  empty. Keep only files for genuinely app-specific components this package does
+  NOT provide.
+- Delete the app's now-redundant `src/lib/utils.ts` (`cn`) if it only existed for
+  the local components — import `cn` from `__REPLIT_ARTIFACT_PACKAGE_NAME__/lib/utils`.
+- Delete the app's now-redundant `src/hooks/use-toast.ts` and import `useToast` /
+  `toast` from `__REPLIT_ARTIFACT_PACKAGE_NAME__/hooks/use-toast` instead — the
+  local hook imports the deleted `@/components/ui/toast` and drives a separate
+  store from the packaged `Toaster`, so leaving it behind breaks the build and
+  silently swallows toasts.
+- Update every remaining import of a package-provided module to the package path.
+  After this, grep the app for `@/components/ui/`, `@/lib/utils`, and
+  `@/hooks/use-toast`; any surviving match must resolve to something this package
+  does not provide — an app-specific component (e.g. `@/components/ui/pricing-card`)
+  or an app-specific export from a retained `@/lib/utils` (e.g. `formatCurrency`).
+- Remove dependencies that are now only pulled in transitively by this package
+  (e.g. the app's own Radix / `class-variance-authority` / `lucide-react`
+  entries) if nothing else in the app uses them.
+- Re-run typecheck to confirm nothing references the deleted files.
+
+Consumption is complete only when **all** of these hold:
+
+- No local copy remains of any component this package provides — `src/components/ui/`
+  holds only app-specific components, or is gone.
+- Nothing imports the package-provided `cn` or toast hook from a local
+  `src/lib/utils` / `src/hooks/use-toast` — those come from the package. Delete
+  the local files if they only existed for the local components; if a file also
+  holds app-specific helpers, keep it but drop the now package-provided export
+  and import `cn` / the toast hook from the package.
+- Any remaining `@/components/ui/`, `@/lib/utils`, or `@/hooks/use-toast` import
+  resolves to something this package does NOT provide. Judge each hit by what it
+  imports, not the file it sits in: a `@/components/ui/<name>` import is fine only
+  when `<name>` is an app-specific component the package lacks. A kept
+  app-specific component must still pull package-provided primitives from the
+  package path (e.g. `import { Button } from "__REPLIT_ARTIFACT_PACKAGE_NAME__/components/ui/button"`,
+  not the local `@/components/ui/button`). And while `cn` / `useToast` / `toast`
+  must come from the package, an app-specific export from a retained `@/lib/utils`
+  (e.g. `formatCurrency`) may keep its local import.
+- Typecheck passes.
+
+## Rules
+
+- Match the exact token values — never invent new colors, fonts, or radii in the
+  consuming app.
+- One source of theme variables: the app must not keep its own `:root` token
+  block once it imports `./styles.css`.
+- This clean path assumes a shadcn/Tailwind consumer. For a non-shadcn app,
+  adopting the tokens (step 1) still applies; component migration is best-effort
+  and may require adapting the app's components to the token CSS vars by hand.

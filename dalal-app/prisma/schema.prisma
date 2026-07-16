@@ -1,0 +1,62 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String    @id @default(uuid())
+  phone       String    @unique
+  password    String
+  name        String
+  role        String    @default("user")
+  createdAt   DateTime  @default(now())
+  listings    Listing[]
+  chatsSent   Chat[]    @relation("ChatSender")
+  chatsReceived Chat[]  @relation("ChatReceiver")
+  messages    Message[]
+}
+
+model Listing {
+  id          String    @id @default(uuid())
+  title       String
+  description String
+  price       Float
+  category    String
+  type        String
+  city        String
+  area        String?
+  images      String[]
+  views       Int       @default(0)
+  status      String    @default("active")
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  chats       Chat[]
+}
+
+model Chat {
+  id          String    @id @default(uuid())
+  listingId   String
+  listing     Listing   @relation(fields: [listingId], references: [id])
+  senderId    String
+  sender      User      @relation("ChatSender", fields: [senderId], references: [id])
+  receiverId  String
+  receiver    User      @relation("ChatReceiver", fields: [receiverId], references: [id])
+  messages    Message[]
+  createdAt   DateTime  @default(now())
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  chatId    String
+  chat      Chat     @relation(fields: [chatId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  text      String
+  createdAt DateTime @default(now())
+}

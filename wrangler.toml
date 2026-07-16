@@ -1,0 +1,6 @@
+name = "dalal-al-iraq"
+compatibility_date = "2026-07-16"
+pages_build_output_dir = "./dist"
+
+[build]
+command = "pnpm run build"

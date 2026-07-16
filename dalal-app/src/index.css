@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --background: 0 0% 98%;
+    --foreground: 222 20% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 20% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 20% 10%;
+    --primary: 25 95% 53%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 20% 96%;
+    --secondary-foreground: 222 20% 20%;
+    --muted: 210 20% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 25 95% 96%;
+    --accent-foreground: 25 95% 40%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 25 95% 53%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 222 30% 7%;
+    --foreground: 210 20% 92%;
+    --card: 222 25% 11%;
+    --card-foreground: 210 20% 92%;
+    --popover: 222 25% 11%;
+    --popover-foreground: 210 20% 92%;
+    --secondary: 217 19% 18%;
+    --secondary-foreground: 210 20% 92%;
+    --muted: 217 19% 18%;
+    --muted-foreground: 215 16% 60%;
+    --accent: 25 60% 20%;
+    --accent-foreground: 25 95% 75%;
+    --border: 217 19% 22%;
+    --input: 217 19% 22%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: 'Cairo', 'Segoe UI', system-ui, sans-serif;
+    direction: rtl;
+    margin: 0;
+  }
+
+  html {
+    direction: rtl;
+  }
+}
+
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+  .line-clamp-1 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+  .line-clamp-2 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}

@@ -1,0 +1,49 @@
+
+> @workspace/api-server@0.0.0 dev /home/runner/workspace/api-server
+> export NODE_ENV=development && pnpm run build && pnpm run start
+
+
+> @workspace/api-server@0.0.0 build /home/runner/workspace/api-server
+> node ./build.mjs
+
+
+  [37mdist/[0m[1mindex.mjs[0m                       [33m2.4mb ⚠️[0m
+  [37mdist/[0m[1mpino-worker.mjs[0m               [36m153.2kb[0m
+  [37mdist/[0m[1mpino-file.mjs[0m                 [36m141.9kb[0m
+  [37mdist/[0m[1mpino-pretty.mjs[0m               [36m114.4kb[0m
+  [37mdist/[0m[1mthread-stream-worker.mjs[0m        [36m7.3kb[0m
+  [37mdist/[0m[1mindex.mjs.map[0m                   [36m4.1mb[0m
+  [37mdist/[0m[1mpino-worker.mjs.map[0m           [36m256.8kb[0m
+  [37mdist/[0m[1mpino-file.mjs.map[0m             [36m228.9kb[0m
+  [37mdist/[0m[1mpino-pretty.mjs.map[0m           [36m203.9kb[0m
+  [37mdist/[0m[1mthread-stream-worker.mjs.map[0m   [36m12.0kb[0m
+
+⚡ [32mDone in 1131ms[0m
+
+> @workspace/api-server@0.0.0 start /home/runner/workspace/api-server
+> node --enable-source-maps ./dist/index.mjs
+
+[11:29:15.483] [31mERROR[39m (1459): [36mError listening on port[39m
+    err: {
+      "type": "Error",
+      "message": "listen EADDRINUSE: address already in use 0.0.0.0:8080",
+      "stack":
+          Error: listen EADDRINUSE: address already in use 0.0.0.0:8080
+              at Server.setupListenHandle [as _listen2] (node:net:1908:16)
+              at listenInCluster (node:net:1965:12)
+              at Server.listen (node:net:2067:7)
+              at Function.listen (/home/runner/workspace/node_modules/.pnpm/express@5.2.1/node_modules/express/lib/application.js:605:24)
+              at <anonymous> (/home/runner/workspace/api-server/src/index.ts:18:5)
+              at ModuleJob.run (node:internal/modules/esm/module_job:325:25)
+              at async ModuleLoader.import (node:internal/modules/esm/loader:606:24)
+              at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+      "code": "EADDRINUSE",
+      "errno": -98,
+      "syscall": "listen",
+      "address": "0.0.0.0",
+      "port": 8080
+    }
+[41m[30m ELIFECYCLE [39m[49m [31mCommand failed with exit code 1.[39m
+/home/runner/workspace/api-server:
+[41m[30m ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL [39m[49m [31m@workspace/api-server@0.0.0 dev: `export NODE_ENV=development && pnpm run build && pnpm run start`[39m
+[31mExit status 1[39m
