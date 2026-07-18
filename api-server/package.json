@@ -21,13 +21,15 @@
     "google-auth-library": "^10.7.0",
     "jose": "^6.2.3",
     "pino": "^9.14.0",
-    "pino-http": "^10.5.0"
+    "pino-http": "^10.5.0",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/qrcode": "^1.5.5",
     "@types/node": "catalog:",
     "esbuild": "0.27.3",
     "esbuild-plugin-pino": "^2.3.3",

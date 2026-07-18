@@ -4,6 +4,7 @@ import { db, officesTable, officeReviewsTable, usersTable, nextSequentialId } fr
 import { authMiddleware, requireAdmin, generateRandomPassword } from "../lib/auth";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
+import QRCode from "qrcode";
 
 const router = Router();
 
@@ -38,6 +39,31 @@ router.get("/", async (req, res) => {
     .where(city ? eq(officesTable.city, city) : undefined)
     .orderBy(sql`${officesTable.createdAt} DESC`);
   res.json({ offices });
+});
+
+// One stable QR code per certified office. Scanning it opens the site chat
+// (deep link /chat?office=OF-xxx) which seeds a server-verified message
+// "من طرف المكتب المعتمد: اسم المكتب".
+router.get("/:id/qr", async (req, res) => {
+  const id = req.params.id as string;
+  const [office] = await db
+    .select({ id: officesTable.id, name: officesTable.name })
+    .from(officesTable)
+    .where(eq(officesTable.id, id))
+    .limit(1);
+  if (!office) {
+    res.status(404).json({ error: "المكتب غير موجود" });
+    return;
+  }
+  const origin = (process.env.PUBLIC_SITE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+  const targetUrl = `${origin}/chat?office=${encodeURIComponent(office.id)}`;
+  try {
+    const dataUrl = await QRCode.toDataURL(targetUrl, { width: 512, margin: 2 });
+    res.json({ officeId: office.id, officeName: office.name, url: targetUrl, qr: dataUrl });
+  } catch (error) {
+    req.log.error({ err: error }, "Error generating office QR");
+    res.status(500).json({ error: "تعذر توليد الباركود" });
+  }
 });
 
 router.get("/:id", async (req, res) => {

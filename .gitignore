@@ -1,5 +1,8 @@
 node_modules
 
+# Local media storage (STORAGE_DRIVER=local)
+uploads
+
 # Local build artifacts
 node_modules
 .vite

@@ -3,11 +3,11 @@ import { useRoute, useLocation } from "wouter";
 import {
   MapPin, Eye, Clock, MessageCircle, Trash2, Ruler, ShieldCheck, BadgeCheck,
   Navigation, BedDouble, Bath, Calendar, Gauge, Flag, TrendingDown, HandCoins,
-  Star, Pencil,
+  Star, Pencil, Building2,
 } from "lucide-react";
 import {
   formatPrice, timeAgo, formatSize, dealTypeStyle, formatCoords, mapsLink,
-  formatMileage, marketPosition, addRecentlyViewed,
+  formatMileage, marketPosition, addRecentlyViewed, listingSource,
 } from "@/lib/utils";
 import { api, getUser } from "@/lib/api";
 import { useT } from "@/lib/i18n";
@@ -36,6 +36,8 @@ interface MarketStats {
   maxPrice: number | null;
   count: number;
   avgPricePerM2: number | null;
+  scope?: string;
+  area?: string | null;
 }
 
 export default function ListingDetailPage() {
@@ -66,6 +68,7 @@ export default function ListingDetailPage() {
         addRecentlyViewed(l.id);
         const p = new URLSearchParams({ category: l.category });
         if (l.city) p.set("city", l.city);
+        if (l.area) p.set("area", l.area);
         if (l.type) p.set("type", l.type);
         api.get<MarketStats>(`/listings/market/stats?${p}`).then(setStats).catch(() => {});
       })
@@ -174,6 +177,19 @@ export default function ListingDetailPage() {
         <div className="flex items-start gap-2 mb-2">
           <div className="flex-1">
             <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 mb-1">{listing.title}</h1>
+            {(() => {
+              const src = listingSource(listing);
+              return (
+                <span className={`inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full mb-2 ${
+                  src.kind === "office"
+                    ? "bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+                    : "bg-orange-50 text-orange-700 dark:bg-orange-950 dark:text-orange-300"
+                }`}>
+                  {src.kind === "office" ? <Building2 className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                  {src.label}
+                </span>
+              );
+            })()}
             <div className="flex items-center gap-2 flex-wrap">
               <p className="text-3xl font-bold text-orange-500">{formatPrice(listing.price)}</p>
               {reduced && (
@@ -208,6 +224,18 @@ export default function ListingDetailPage() {
             {stats?.count ? <span className="opacity-70">· {t("market.basedOn", { count: stats.count })}</span> : null}
           </div>
         )}
+
+        {/* Per-m² market context (feature 2) */}
+        {stats?.avgPricePerM2 ? (
+          <div className="mb-3 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-xs text-gray-600 dark:text-gray-400">
+            متوسط سعر المتر
+            {stats.scope === "area" && stats.area ? ` في ${stats.area}` : stats.scope === "city" && listing.city ? ` في ${listing.city}` : ""}:
+            {" "}<span className="font-bold text-gray-800 dark:text-gray-200">{formatPrice(Math.round(stats.avgPricePerM2))}</span> / م²
+            {listing.size ? (
+              <> · تقدير حسب المساحة ({formatSize(listing.size)}): <span className="font-bold text-emerald-700 dark:text-emerald-400">{formatPrice(Math.round(stats.avgPricePerM2 * listing.size))}</span></>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Meta */}
         <div className="flex flex-wrap gap-3 mb-4 mt-1">

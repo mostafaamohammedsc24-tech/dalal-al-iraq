@@ -4,7 +4,7 @@ import { Search, SlidersHorizontal, X, LocateFixed, Loader2, MapPin, Map as MapI
 import { ListingCard, ListingItem } from "@/components/listing-card";
 import { ListingsMap } from "@/components/listings-map";
 import {
-  CITIES, REAL_ESTATE_TYPES, CAR_BRANDS, SIZE_FILTERS, OWNERSHIP_TYPES, DEAL_TYPES,
+  CITIES, REAL_ESTATE_TYPES, CAR_BRANDS, OWNERSHIP_TYPES, DEAL_TYPES,
   BEDROOM_OPTIONS, BATHROOM_OPTIONS, CAR_YEARS, MILEAGE_FILTERS, getCurrentLocation,
 } from "@/lib/utils";
 import { api, getUser } from "@/lib/api";
@@ -26,11 +26,14 @@ export default function ListingsPage() {
 
   const [q, setQ] = useState(params.get("q") || "");
   const [city, setCity] = useState(params.get("city") || "");
+  const [area, setArea] = useState(params.get("area") || "");
+  const [areaOptions, setAreaOptions] = useState<string[]>([]);
   const [category, setCategory] = useState(params.get("category") || "");
   const [type, setType] = useState("");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
-  const [sizeIdx, setSizeIdx] = useState("");
+  const [minSize, setMinSize] = useState("");
+  const [maxSize, setMaxSize] = useState("");
   const [ownershipType, setOwnershipType] = useState("");
   const [dealType, setDealType] = useState("");
   const [minBedrooms, setMinBedrooms] = useState("");
@@ -55,6 +58,14 @@ export default function ListingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, near, radius]);
 
+  // Area classifications for the selected governorate (feature 4 filter).
+  useEffect(() => {
+    if (!city) { setAreaOptions([]); return; }
+    api.get<{ areas: { name: string }[] }>(`/areas?city=${encodeURIComponent(city)}`)
+      .then((d) => setAreaOptions(d.areas.map((a) => a.name)))
+      .catch(() => setAreaOptions([]));
+  }, [city]);
+
   function buildParams(forFetch: boolean) {
     const p = new URLSearchParams();
     if (q) p.set("q", q);
@@ -62,11 +73,9 @@ export default function ListingsPage() {
     if (type) p.set("type", type);
     if (minPrice) p.set("minPrice", minPrice);
     if (maxPrice) p.set("maxPrice", maxPrice);
-    if (sizeIdx !== "") {
-      const f = SIZE_FILTERS[Number(sizeIdx)];
-      if (f?.min) p.set("minSize", f.min);
-      if (f?.max) p.set("maxSize", f.max);
-    }
+    if (minSize) p.set("minSize", minSize);
+    if (maxSize) p.set("maxSize", maxSize);
+    if (area) p.set("area", area);
     if (ownershipType) p.set("ownershipType", ownershipType);
     if (dealType) p.set("dealType", dealType);
     if (minBedrooms) p.set("minBedrooms", minBedrooms);
@@ -153,8 +162,8 @@ export default function ListingsPage() {
   }
 
   function clearFilters() {
-    setQ(""); setCity(""); setCategory(""); setType(""); setMinPrice(""); setMaxPrice("");
-    setSizeIdx(""); setOwnershipType(""); setDealType(""); setNear(null);
+    setQ(""); setCity(""); setArea(""); setCategory(""); setType(""); setMinPrice(""); setMaxPrice("");
+    setMinSize(""); setMaxSize(""); setOwnershipType(""); setDealType(""); setNear(null);
     setMinBedrooms(""); setMinBathrooms(""); setMinBuildYear(""); setMinCarYear(""); setMaxMileageIdx("");
   }
 
@@ -179,7 +188,7 @@ export default function ListingsPage() {
   }
 
   const types = category === "عقارات" ? REAL_ESTATE_TYPES : category === "سيارات" ? CAR_BRANDS : [];
-  const hasAnyFilter = !!(q || category || city || type || minPrice || maxPrice);
+  const hasAnyFilter = !!(q || category || city || area || type || minPrice || maxPrice || minSize || maxSize);
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-5">
@@ -279,11 +288,17 @@ export default function ListingsPage() {
               <option value="عقارات">{t("common.realestate")}</option>
               <option value="سيارات">{t("common.cars")}</option>
             </select>
-            <select value={city} onChange={(e) => setCity(e.target.value)}
+            <select value={city} onChange={(e) => { setCity(e.target.value); setArea(""); }}
               className="border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-orange-300">
               <option value="">{t("common.allCities")}</option>
               {CITIES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
+            <input value={area} onChange={(e) => setArea(e.target.value)} list="filter-area-suggestions"
+              placeholder="المنطقة / الحي" disabled={!city}
+              className="border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-orange-300 disabled:opacity-50 col-span-2" />
+            <datalist id="filter-area-suggestions">
+              {areaOptions.map((a) => <option key={a} value={a} />)}
+            </datalist>
             {types.length > 0 && (
               <select value={type} onChange={(e) => setType(e.target.value)}
                 className="border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-orange-300 col-span-2">
@@ -297,14 +312,13 @@ export default function ListingsPage() {
               {DEAL_TYPES.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
             {category === "عقارات" && (
-              <select value={sizeIdx} onChange={(e) => setSizeIdx(e.target.value)}
-                className="border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-orange-300">
-                <option value="">{t("listings.allSizes")}</option>
-                {SIZE_FILTERS.map((f, i) => <option key={f.label} value={i}>{f.label}</option>)}
-              </select>
-            )}
-            {category === "عقارات" && (
               <>
+                <input value={minSize} onChange={(e) => setMinSize(e.target.value.replace(/[^\d.]/g, ""))}
+                  inputMode="decimal" placeholder="أقل مساحة (م²)"
+                  className="border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-orange-300" />
+                <input value={maxSize} onChange={(e) => setMaxSize(e.target.value.replace(/[^\d.]/g, ""))}
+                  inputMode="decimal" placeholder="أعلى مساحة (م²)"
+                  className="border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-orange-300" />
                 <select value={minBedrooms} onChange={(e) => setMinBedrooms(e.target.value)}
                   className="border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-orange-300">
                   <option value="">{t("listings.bedrooms")}</option>
@@ -360,10 +374,11 @@ export default function ListingsPage() {
       )}
 
       {/* Active filters tags */}
-      {(category || city || type) && (
+      {(category || city || area || type) && (
         <div className="flex flex-wrap gap-2 mb-3">
           {category && <span className="bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 px-3 py-1 rounded-full text-xs font-medium">{category}</span>}
           {city && <span className="bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 px-3 py-1 rounded-full text-xs font-medium">{city}</span>}
+          {area && <span className="bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 px-3 py-1 rounded-full text-xs font-medium">{area}</span>}
           {type && <span className="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-3 py-1 rounded-full text-xs font-medium">{type}</span>}
         </div>
       )}

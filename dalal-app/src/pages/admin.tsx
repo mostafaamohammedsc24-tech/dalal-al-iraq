@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation, Link } from "wouter";
-import { Building2, Users, Eye, Trash2, CheckCircle, XCircle, Handshake, Plus, MapPin, Phone, Loader2, Pin, Flag, Scale, Wallet, KeyRound, Ban, PlayCircle } from "lucide-react";
+import { Building2, Users, Eye, Trash2, CheckCircle, XCircle, Handshake, Plus, MapPin, Phone, Loader2, Pin, Flag, Scale, Wallet, KeyRound, Ban, PlayCircle, QrCode, X, Download, Map } from "lucide-react";
 import { formatPrice, timeAgo, CITIES, DEAL_TYPES } from "@/lib/utils";
 import { api, getUser } from "@/lib/api";
 import { ListingItem } from "@/components/listing-card";
@@ -54,7 +54,16 @@ export default function AdminPage() {
   const [, navigate] = useLocation();
   const [data, setData] = useState<AdminData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"listings" | "offices" | "lawyers" | "payouts" | "reports">("listings");
+  const [tab, setTab] = useState<"listings" | "offices" | "lawyers" | "payouts" | "reports" | "areas">("listings");
+
+  const [qr, setQr] = useState<{ officeName: string; url: string; qr: string } | null>(null);
+  const [qrLoading, setQrLoading] = useState<string | null>(null);
+
+  const [areas, setAreas] = useState<{ id: string; city: string; name: string }[]>([]);
+  const [areaCity, setAreaCity] = useState(CITIES[0]);
+  const [areaName, setAreaName] = useState("");
+  const [areaSaving, setAreaSaving] = useState(false);
+  const [areaError, setAreaError] = useState("");
 
   const [offices, setOffices] = useState<Office[]>([]);
   const [officeStatuses, setOfficeStatuses] = useState<Record<string, string>>({});
@@ -88,6 +97,50 @@ export default function AdminPage() {
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function loadAreas(city: string) {
+    api.get<{ areas: { id: string; city: string; name: string }[] }>(`/areas?city=${encodeURIComponent(city)}`)
+      .then((d) => setAreas(d.areas))
+      .catch(() => setAreas([]));
+  }
+
+  useEffect(() => {
+    if (tab === "areas") loadAreas(areaCity);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, areaCity]);
+
+  async function addArea(e: React.FormEvent) {
+    e.preventDefault();
+    if (!areaName.trim()) { setAreaError("اسم المنطقة مطلوب"); return; }
+    setAreaError(""); setAreaSaving(true);
+    try {
+      const created = await api.post<{ id: string; city: string; name: string }>("/areas", { city: areaCity, name: areaName.trim() });
+      setAreas((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name, "ar")));
+      setAreaName("");
+    } catch (err: unknown) {
+      setAreaError(err instanceof Error ? err.message : "حدث خطأ");
+    } finally {
+      setAreaSaving(false);
+    }
+  }
+
+  async function deleteArea(id: string) {
+    if (!confirm("حذف هذه المنطقة؟")) return;
+    await api.delete(`/areas/${id}`);
+    setAreas((prev) => prev.filter((a) => a.id !== id));
+  }
+
+  async function showOfficeQr(id: string) {
+    setQrLoading(id);
+    try {
+      const d = await api.get<{ officeName: string; url: string; qr: string }>(`/offices/${id}/qr`);
+      setQr(d);
+    } catch {
+      /* ignore */
+    } finally {
+      setQrLoading(null);
+    }
+  }
 
   async function addLawyer(e: React.FormEvent) {
     e.preventDefault();
@@ -297,6 +350,10 @@ export default function AdminPage() {
             <span className="bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">{openCount}</span>
           )}
         </button>
+        <button onClick={() => setTab("areas")}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition whitespace-nowrap ${tab === "areas" ? "bg-white dark:bg-gray-700 text-orange-500 shadow-sm" : "text-gray-500 dark:text-gray-400"}`}>
+          المناطق
+        </button>
       </div>
 
       {/* Listings table */}
@@ -483,6 +540,9 @@ export default function AdminPage() {
                       </p>
                     </div>
                     <div className="flex items-center gap-1">
+                      <button onClick={() => showOfficeQr(office.id)} disabled={qrLoading === office.id} className="text-purple-400 hover:text-purple-600 transition p-1 disabled:opacity-50" title="باركود المكتب">
+                        {qrLoading === office.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <QrCode className="w-4 h-4" />}
+                      </button>
                       <button onClick={() => resetOfficePassword(office.id)} className="text-blue-300 hover:text-blue-500 transition p-1" title="إعادة تعيين كلمة المرور">
                         <KeyRound className="w-4 h-4" />
                       </button>
@@ -663,6 +723,85 @@ export default function AdminPage() {
             ))}
           </div>
         )
+      )}
+
+      {/* Areas management */}
+      {tab === "areas" && (
+        <div className="grid md:grid-cols-2 gap-5">
+          {/* Add area form */}
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-5 h-fit">
+            <h2 className="font-bold text-gray-800 dark:text-gray-100 mb-4 flex items-center gap-2">
+              <Map className="w-5 h-5 text-orange-500" /> إضافة منطقة / حي جديد
+            </h2>
+            {areaError && (
+              <div className="bg-red-50 dark:bg-red-950 border border-red-100 dark:border-red-900 text-red-600 dark:text-red-400 rounded-xl p-3 mb-4 text-sm">{areaError}</div>
+            )}
+            <form onSubmit={addArea} className="space-y-3">
+              <div>
+                <label className={labelCls}>المحافظة</label>
+                <select value={areaCity} onChange={(e) => setAreaCity(e.target.value)} className={inputCls}>
+                  {CITIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>اسم المنطقة / الحي</label>
+                <input value={areaName} onChange={(e) => setAreaName(e.target.value)}
+                  placeholder="مثال: الغزالية" className={inputCls} />
+              </div>
+              <button type="submit" disabled={areaSaving}
+                className="w-full py-3 bg-orange-500 text-white rounded-xl font-bold hover:bg-orange-600 transition disabled:opacity-50 text-sm flex items-center justify-center gap-2">
+                {areaSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                {areaSaving ? "جاري الحفظ..." : "إضافة المنطقة"}
+              </button>
+            </form>
+          </div>
+
+          {/* Areas list */}
+          <div className="space-y-3">
+            <h2 className="font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+              <MapPin className="w-5 h-5 text-orange-500" /> مناطق {areaCity} ({areas.length})
+            </h2>
+            {areas.length === 0 ? (
+              <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-8 text-center text-gray-400">
+                <Map className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                <p className="text-sm">لا توجد مناطق لهذه المحافظة بعد</p>
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-3 flex flex-wrap gap-2">
+                {areas.map((a) => (
+                  <span key={a.id} className="inline-flex items-center gap-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-full pr-3 pl-1.5 py-1 text-sm text-gray-700 dark:text-gray-200">
+                    {a.name}
+                    <button onClick={() => deleteArea(a.id)} className="text-gray-300 hover:text-red-500 transition" title="حذف">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Office QR modal */}
+      {qr && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setQr(null)}>
+          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 max-w-xs w-full text-center" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-gray-800 dark:text-gray-100">باركود المكتب</h3>
+              <button onClick={() => setQr(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">{qr.officeName}</p>
+            <img src={qr.qr} alt="QR" className="w-56 h-56 mx-auto rounded-xl border border-gray-100 dark:border-gray-800" />
+            <p className="text-xs text-gray-400 mt-3 break-all" dir="ltr">{qr.url}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">عند المسح تُفتح محادثة مع دلال العراق منسوبة لهذا المكتب.</p>
+            <a href={qr.qr} download={`qr-${qr.officeName}.png`}
+              className="mt-4 w-full inline-flex items-center justify-center gap-2 bg-orange-500 text-white py-2.5 rounded-xl font-bold hover:bg-orange-600 transition text-sm">
+              <Download className="w-4 h-4" /> تنزيل الباركود
+            </a>
+          </div>
+        </div>
       )}
     </div>
   );

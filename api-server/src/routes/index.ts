@@ -20,6 +20,8 @@ import workshopsRouter from "./workshops";
 import networkNotificationsRouter from "./network-notifications";
 import inspectionsRouter from "./inspections";
 import contractsRouter, { lawyerServicesRouter } from "./contracts";
+import areasRouter from "./areas";
+import aiRouter from "./ai";
 
 const router: IRouter = Router();
 
@@ -45,5 +47,7 @@ router.use("/network-notifications", networkNotificationsRouter);
 router.use("/inspections", inspectionsRouter);
 router.use("/contracts", contractsRouter);
 router.use("/lawyer-services", lawyerServicesRouter);
+router.use("/areas", areasRouter);
+router.use("/ai", aiRouter);
 
 export default router;

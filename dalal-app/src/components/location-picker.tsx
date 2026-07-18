@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { Search, LocateFixed, Loader2, MapPin, X } from "lucide-react";
+import { Search, LocateFixed, Loader2, MapPin, X, Check } from "lucide-react";
 import { getCurrentLocation, formatCoords, type Coords } from "@/lib/utils";
 
 const IRAQ_CENTER: [number, number] = [33.3152, 44.3661];
@@ -22,15 +22,29 @@ export function LocationPicker({ value, onChange }: Props) {
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
 
-  function placeMarker(lat: number, lng: number, fly = true) {
+  // Coordinates are STAGED here first; they are only shared with the parent form
+  // when the user presses "موافق" (confirm). This prevents the picker from
+  // resetting the surrounding flow and makes selection explicit.
+  const [pending, setPending] = useState<Coords | null>(value);
+  const [latInput, setLatInput] = useState(value ? String(value.lat) : "");
+  const [lngInput, setLngInput] = useState(value ? String(value.lng) : "");
+
+  const confirmed = value != null;
+  const dirty =
+    pending != null &&
+    (!value || Math.abs(value.lat - pending.lat) > 1e-9 || Math.abs(value.lng - pending.lng) > 1e-9);
+
+  function stage(lat: number, lng: number, fly = true) {
+    setPending({ lat, lng });
+    setLatInput(String(lat));
+    setLngInput(String(lng));
+    setError("");
     const map = mapRef.current;
     if (!map) return;
     if (markerRef.current) {
@@ -39,12 +53,13 @@ export function LocationPicker({ value, onChange }: Props) {
       const m = L.marker([lat, lng], { icon: pinIcon, draggable: true }).addTo(map);
       m.on("dragend", () => {
         const p = m.getLatLng();
-        onChangeRef.current({ lat: p.lat, lng: p.lng });
+        setPending({ lat: p.lat, lng: p.lng });
+        setLatInput(String(p.lat));
+        setLngInput(String(p.lng));
       });
       markerRef.current = m;
     }
     if (fly) map.flyTo([lat, lng], Math.max(map.getZoom(), 16));
-    onChangeRef.current({ lat, lng });
   }
 
   useEffect(() => {
@@ -57,14 +72,16 @@ export function LocationPicker({ value, onChange }: Props) {
       maxZoom: 19,
     }).addTo(map);
     map.on("click", (e: L.LeafletMouseEvent) => {
-      placeMarker(e.latlng.lat, e.latlng.lng, false);
+      stage(e.latlng.lat, e.latlng.lng, false);
     });
     mapRef.current = map;
     if (hasValue) {
       const m = L.marker(start, { icon: pinIcon, draggable: true }).addTo(map);
       m.on("dragend", () => {
         const p = m.getLatLng();
-        onChangeRef.current({ lat: p.lat, lng: p.lng });
+        setPending({ lat: p.lat, lng: p.lng });
+        setLatInput(String(p.lat));
+        setLngInput(String(p.lng));
       });
       markerRef.current = m;
     }
@@ -81,11 +98,13 @@ export function LocationPicker({ value, onChange }: Props) {
     if (value == null && markerRef.current && mapRef.current) {
       mapRef.current.removeLayer(markerRef.current);
       markerRef.current = null;
+      setPending(null);
+      setLatInput("");
+      setLngInput("");
     }
   }, [value]);
 
-  async function runSearch(e: React.FormEvent) {
-    e.preventDefault();
+  async function runSearch() {
     const q = query.trim();
     if (!q) return;
     setSearching(true);
@@ -104,7 +123,7 @@ export function LocationPicker({ value, onChange }: Props) {
         setError("لم يتم العثور على المكان، جرّب اسماً أوضح");
         return;
       }
-      placeMarker(parseFloat(data[0].lat), parseFloat(data[0].lon));
+      stage(parseFloat(data[0]!.lat), parseFloat(data[0]!.lon));
     } catch {
       setError("تعذر البحث، حاول مجدداً");
     } finally {
@@ -117,7 +136,7 @@ export function LocationPicker({ value, onChange }: Props) {
     setError("");
     try {
       const c = await getCurrentLocation();
-      placeMarker(c.lat, c.lng);
+      stage(c.lat, c.lng);
     } catch (err) {
       setError(err instanceof Error ? err.message : "تعذر تحديد الموقع");
     } finally {
@@ -125,25 +144,51 @@ export function LocationPicker({ value, onChange }: Props) {
     }
   }
 
+  function applyManualCoords() {
+    const lat = parseFloat(latInput.replace(/[^\d.\-]/g, ""));
+    const lng = parseFloat(lngInput.replace(/[^\d.\-]/g, ""));
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lng) || lng < -180 || lng > 180) {
+      setError("إحداثيات غير صالحة (خط العرض -90..90، خط الطول -180..180)");
+      return;
+    }
+    stage(lat, lng);
+  }
+
+  function confirmLocation() {
+    if (!pending) return;
+    onChange({ lat: pending.lat, lng: pending.lng });
+    setError("");
+  }
+
+  function onKeyDownNoSubmit(e: React.KeyboardEvent, fn: () => void) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      fn();
+    }
+  }
+
   return (
     <div className="space-y-2">
       <div className="flex gap-2">
-        <form onSubmit={runSearch} className="relative flex-1">
+        <div className="relative flex-1">
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => onKeyDownNoSubmit(e, runSearch)}
             placeholder="ابحث عن نقطة دالة (مثال: جامع، ساحة، مول)"
             className="w-full border border-gray-200 rounded-xl pr-9 pl-3 py-2.5 text-right text-sm focus:outline-none focus:ring-2 focus:ring-orange-300"
           />
           <button
-            type="submit"
+            type="button"
+            onClick={runSearch}
             disabled={searching}
             className="absolute right-2 top-1/2 -translate-y-1/2 text-orange-500 disabled:opacity-50"
             title="بحث"
           >
             {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
           </button>
-        </form>
+        </div>
         <button
           type="button"
           onClick={useMyLocation}
@@ -155,6 +200,35 @@ export function LocationPicker({ value, onChange }: Props) {
         </button>
       </div>
 
+      {/* Manual coordinate entry with an explicit confirm — no page reset. */}
+      <div className="flex gap-2">
+        <input
+          value={latInput}
+          onChange={(e) => setLatInput(e.target.value)}
+          onKeyDown={(e) => onKeyDownNoSubmit(e, applyManualCoords)}
+          inputMode="decimal"
+          placeholder="خط العرض (lat)"
+          dir="ltr"
+          className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-orange-300"
+        />
+        <input
+          value={lngInput}
+          onChange={(e) => setLngInput(e.target.value)}
+          onKeyDown={(e) => onKeyDownNoSubmit(e, applyManualCoords)}
+          inputMode="decimal"
+          placeholder="خط الطول (lng)"
+          dir="ltr"
+          className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-orange-300"
+        />
+        <button
+          type="button"
+          onClick={applyManualCoords}
+          className="px-3 rounded-xl border border-gray-200 text-gray-600 text-sm font-medium hover:bg-gray-50 transition whitespace-nowrap"
+        >
+          وضع الدبوس
+        </button>
+      </div>
+
       {error && <p className="text-red-500 text-xs">{error}</p>}
 
       <div
@@ -163,21 +237,32 @@ export function LocationPicker({ value, onChange }: Props) {
         style={{ direction: "ltr" }}
       />
 
-      <p className="text-gray-400 text-xs">انقر على الخريطة أو اسحب الدبوس لتحديد الموقع بدقة</p>
+      <p className="text-gray-400 text-xs">انقر على الخريطة أو اسحب الدبوس أو أدخل الإحداثيات، ثم اضغط «موافق» لتثبيت الموقع</p>
 
-      {value && (
+      {pending && (
         <div className="flex items-center justify-between gap-2 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2">
           <p className="flex items-center gap-1.5 text-emerald-700 text-xs font-medium" dir="ltr">
-            <MapPin className="w-3.5 h-3.5" /> {formatCoords(value.lat, value.lng)}
+            <MapPin className="w-3.5 h-3.5" /> {formatCoords(pending.lat, pending.lng)}
+            {confirmed && !dirty && <Check className="w-3.5 h-3.5" />}
           </p>
-          <button
-            type="button"
-            onClick={() => onChange(null)}
-            className="text-emerald-500 hover:text-red-500 transition"
-            title="إزالة الموقع"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={confirmLocation}
+              disabled={confirmed && !dirty}
+              className="flex items-center gap-1 bg-emerald-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-emerald-600 transition disabled:opacity-50"
+            >
+              <Check className="w-3.5 h-3.5" /> {confirmed && !dirty ? "تم التثبيت" : "موافق"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange(null)}
+              className="text-emerald-500 hover:text-red-500 transition"
+              title="إزالة الموقع"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
     </div>

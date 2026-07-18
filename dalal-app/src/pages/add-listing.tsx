@@ -6,12 +6,20 @@ import { api, getUser, uploadFile, mediaUrl } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import { LocationPicker } from "@/components/location-picker";
 
+// Deal types offered when publishing. "مباع" is a status set later by admin.
+const LISTING_DEAL_TYPES = ["للبيع", "للايجار", "رهن"];
+
 interface MarketStats {
   avgPrice: number;
   minPrice: number;
   maxPrice: number;
   count: number;
   avgPricePerM2: number;
+  minPricePerM2?: number;
+  maxPricePerM2?: number;
+  sampleWithSize?: number;
+  scope?: string;
+  area?: string | null;
 }
 
 interface Office {
@@ -53,6 +61,7 @@ export default function AddListingPage() {
   const [offices, setOffices] = useState<Office[]>([]);
   const [officesLoading, setOfficesLoading] = useState(false);
   const [market, setMarket] = useState<MarketStats | null>(null);
+  const [areaOptions, setAreaOptions] = useState<string[]>([]);
 
   const t = useT();
   const types = category === "عقارات" ? REAL_ESTATE_TYPES : CAR_BRANDS;
@@ -65,10 +74,20 @@ export default function AddListingPage() {
     if (!category) { setMarket(null); return; }
     const p = new URLSearchParams({ category });
     if (city) p.set("city", city);
+    if (area) p.set("area", area);
+    if (type) p.set("type", type);
     api.get<MarketStats>(`/listings/market/stats?${p.toString()}`)
       .then((d) => setMarket(d.count > 0 ? d : null))
       .catch(() => setMarket(null));
-  }, [category, city]);
+  }, [category, city, area, type]);
+
+  // Load the area classifications for the selected governorate (feature 3).
+  useEffect(() => {
+    if (!city) { setAreaOptions([]); return; }
+    api.get<{ areas: { name: string }[] }>(`/areas?city=${encodeURIComponent(city)}`)
+      .then((d) => setAreaOptions(d.areas.map((a) => a.name)))
+      .catch(() => setAreaOptions([]));
+  }, [city]);
 
   useEffect(() => {
     if (!city) { setOffices([]); return; }
@@ -238,32 +257,60 @@ export default function AddListingPage() {
             <input value={price} onChange={(e) => setPrice(e.target.value)} type="number" placeholder="0" min="0"
               className={inputCls} />
 
-            {market && (
-              <div className="mt-2 rounded-xl border border-orange-100 dark:border-orange-900 bg-orange-50/60 dark:bg-orange-950/40 p-3">
-                <p className="text-xs font-bold text-orange-600 dark:text-orange-400 mb-1">{t("add.valuationTitle")}</p>
-                <p className="text-[11px] text-gray-600 dark:text-gray-400 leading-relaxed">
-                  {t("add.valuationAvg")}: <span className="font-bold text-gray-800 dark:text-gray-200">{formatPrice(market.avgPrice)}</span>
-                  {" · "}{t("add.valuationRange")}: {formatPrice(market.minPrice)} — {formatPrice(market.maxPrice)}
-                </p>
-                {price && parseFloat(price) > 0 && (
-                  <p className="text-[11px] mt-1 font-medium">
-                    {parseFloat(price) > market.avgPrice * 1.15 ? (
-                      <span className="text-amber-600">{t("add.valuationHigh")}</span>
-                    ) : parseFloat(price) < market.avgPrice * 0.85 ? (
-                      <span className="text-emerald-600">{t("add.valuationLow")}</span>
-                    ) : (
-                      <span className="text-emerald-600">{t("add.valuationFair")}</span>
-                    )}
+            {market && (() => {
+              // Per-m² valuation (feature 2): when the market sample has sizes and
+              // the user entered an area, estimate a fair price for THIS property.
+              const perM2 = market.avgPricePerM2 > 0 ? market.avgPricePerM2 : 0;
+              const sizeNum = parseFloat(size);
+              const estimate = perM2 > 0 && Number.isFinite(sizeNum) && sizeNum > 0 ? perM2 * sizeNum : 0;
+              const scopeLabel =
+                market.scope === "area" && market.area
+                  ? `منطقة ${market.area}`
+                  : market.scope === "city" && city
+                    ? `محافظة ${city}`
+                    : "السوق";
+              const priceNum = parseFloat(price);
+              // Compare against the size-based estimate when available, else the average.
+              const baseline = estimate > 0 ? estimate : market.avgPrice;
+              return (
+                <div className="mt-2 rounded-xl border border-orange-100 dark:border-orange-900 bg-orange-50/60 dark:bg-orange-950/40 p-3">
+                  <p className="text-xs font-bold text-orange-600 dark:text-orange-400 mb-1">
+                    {t("add.valuationTitle")} <span className="font-normal text-gray-500">({scopeLabel})</span>
                   </p>
-                )}
-              </div>
-            )}
+                  <p className="text-[11px] text-gray-600 dark:text-gray-400 leading-relaxed">
+                    {t("add.valuationAvg")}: <span className="font-bold text-gray-800 dark:text-gray-200">{formatPrice(market.avgPrice)}</span>
+                    {" · "}{t("add.valuationRange")}: {formatPrice(market.minPrice)} — {formatPrice(market.maxPrice)}
+                  </p>
+                  {perM2 > 0 && (
+                    <p className="text-[11px] text-gray-600 dark:text-gray-400 leading-relaxed mt-0.5">
+                      متوسط سعر المتر: <span className="font-bold text-gray-800 dark:text-gray-200">{formatPrice(Math.round(perM2))}</span> / م²
+                    </p>
+                  )}
+                  {estimate > 0 && (
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-400 leading-relaxed mt-0.5">
+                      التقدير حسب مساحتك ({sizeNum} م²): <span className="font-bold">{formatPrice(Math.round(estimate))}</span>
+                    </p>
+                  )}
+                  {price && priceNum > 0 && baseline > 0 && (
+                    <p className="text-[11px] mt-1 font-medium">
+                      {priceNum > baseline * 1.15 ? (
+                        <span className="text-amber-600">{t("add.valuationHigh")}</span>
+                      ) : priceNum < baseline * 0.85 ? (
+                        <span className="text-emerald-600">{t("add.valuationLow")}</span>
+                      ) : (
+                        <span className="text-emerald-600">{t("add.valuationFair")}</span>
+                      )}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           <div>
             <label className={labelCls}>نوع العرض</label>
-            <div className="grid grid-cols-2 gap-2">
-              {["للبيع", "للايجار"].map((d) => (
+            <div className="grid grid-cols-3 gap-2">
+              {LISTING_DEAL_TYPES.map((d) => (
                 <button key={d} type="button" onClick={() => setDealType(d)}
                   className={`py-2.5 rounded-xl text-sm border-2 transition font-medium ${
                     dealType === d
@@ -279,11 +326,19 @@ export default function AddListingPage() {
           {category === "عقارات" && (
             <>
               <div>
-                <label className={labelCls}>المساحة (م²)</label>
-                <select value={size} onChange={(e) => setSize(e.target.value)} className={selectCls}>
-                  <option value="">اختر المساحة (اختياري)</option>
-                  {SIZE_OPTIONS.map((s) => <option key={s} value={s}>{s} م²</option>)}
-                </select>
+                <label className={labelCls}>المساحة (م²) <span className="text-gray-400">({t("common.optional")})</span></label>
+                <input
+                  value={size}
+                  onChange={(e) => setSize(e.target.value.replace(/[^\d.]/g, ""))}
+                  type="text"
+                  inputMode="decimal"
+                  list="size-suggestions"
+                  placeholder="اكتب المساحة، مثال: 187"
+                  className={inputCls}
+                />
+                <datalist id="size-suggestions">
+                  {SIZE_OPTIONS.map((s) => <option key={s} value={s} />)}
+                </datalist>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -378,8 +433,12 @@ export default function AddListingPage() {
 
           <div>
             <label className={labelCls}>المنطقة / الحي <span className="text-gray-400">({t("common.optional")})</span></label>
-            <input value={area} onChange={(e) => setArea(e.target.value)} placeholder="مثال: حي الجامعة"
-              className={inputCls} />
+            <input value={area} onChange={(e) => setArea(e.target.value)} placeholder="اختر أو اكتب المنطقة، مثال: الغزالية"
+              list="area-suggestions" className={inputCls} disabled={!city} />
+            <datalist id="area-suggestions">
+              {areaOptions.map((a) => <option key={a} value={a} />)}
+            </datalist>
+            {!city && <p className="text-gray-400 text-[11px] mt-1">اختر المحافظة أولاً لعرض المناطق</p>}
           </div>
 
           <div>

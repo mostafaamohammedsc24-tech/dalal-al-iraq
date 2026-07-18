@@ -22,6 +22,9 @@ export const listingsTable = pgTable("listings", {
   longitude: real("longitude"),
   ownershipType: text("ownership_type"),
   dealType: text("deal_type").notNull().default("للبيع"),
+  // Attribution: when a listing belongs to a certified office, this holds the
+  // office id (OF-xxx). Null means it is presented under شبكة دلال العراق.
+  officeId: text("office_id"),
   pinned: boolean("pinned").notNull().default(false),
   verified: boolean("verified").notNull().default(false),
   featured: boolean("featured").notNull().default(false),
