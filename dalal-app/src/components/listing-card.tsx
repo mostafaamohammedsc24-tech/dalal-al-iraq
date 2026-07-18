@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { MapPin, Eye, Clock, Pin, Ruler, GitCompareArrows, BedDouble, Bath, Gauge, BadgeCheck, Star } from "lucide-react";
+import { MapPin, Eye, Clock, Pin, Ruler, GitCompareArrows, BedDouble, Bath, Gauge, BadgeCheck, Star, Building2, ShieldCheck } from "lucide-react";
 import {
   formatPrice,
   timeAgo,
@@ -9,6 +9,8 @@ import {
   formatMileage,
   isInCompare,
   toggleCompare,
+  listingSource,
+  listingPath,
   cn,
 } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -40,6 +42,8 @@ export interface ListingItem {
   views: number;
   createdAt: string;
   bumpedAt?: string | null;
+  officeId?: string | null;
+  officeName?: string | null;
   user?: { name: string };
 }
 
@@ -90,7 +94,7 @@ export function ListingCard({ listing }: { listing: ListingItem }) {
           images={listing.images}
           video={listing.video}
           category={listing.category}
-          linkHref={`/listings/${listing.id}`}
+          linkHref={listingPath(listing.id, listing.title)}
           heightClass="h-40"
         />
         <div className="absolute top-2 right-2 flex flex-col gap-1 items-end z-10 pointer-events-none">
@@ -141,7 +145,7 @@ export function ListingCard({ listing }: { listing: ListingItem }) {
         )}
       </div>
 
-      <Link href={`/listings/${listing.id}`} className="block p-3">
+      <Link href={listingPath(listing.id, listing.title)} className="block p-3">
         <div className="flex items-center gap-1.5 mb-1">
           <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
             listing.category === "عقارات"
@@ -152,6 +156,22 @@ export function ListingCard({ listing }: { listing: ListingItem }) {
           </span>
         </div>
         <h3 className="font-bold text-gray-800 dark:text-gray-100 text-sm line-clamp-2 mb-2 text-right leading-snug">{listing.title}</h3>
+        {(() => {
+          const src = listingSource(listing);
+          return (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full mb-2",
+                src.kind === "office"
+                  ? "bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+                  : "bg-orange-50 text-orange-700 dark:bg-orange-950 dark:text-orange-300",
+              )}
+            >
+              {src.kind === "office" ? <Building2 className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+              <span className="line-clamp-1">{src.label}</span>
+            </span>
+          );
+        })()}
         <div className="text-right">
           <p className="text-orange-500 font-bold text-base">{formatPrice(listing.price)}</p>
           {reduced && (

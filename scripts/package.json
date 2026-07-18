@@ -6,6 +6,7 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "seed:admin": "tsx ./src/seed-admin.ts",
+    "seed:areas": "tsx ./src/seed-areas.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

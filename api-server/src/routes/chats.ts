@@ -1,9 +1,11 @@
 import { Router } from "express";
 import { eq, or, and, sql, isNull } from "drizzle-orm";
-import { db, chatsTable, messagesTable, listingsTable, usersTable } from "@workspace/db";
+import { db, chatsTable, messagesTable, listingsTable, usersTable, officesTable } from "@workspace/db";
 import { authMiddleware } from "../lib/auth";
 import { getAdminUserId, createNotification } from "../lib/dalal";
 import { randomUUID } from "crypto";
+
+const MESSAGE_TYPES = ["text", "image", "voice"];
 
 const DALAL_NAME = "شبكة دلال العراق";
 const LISTING_CARD_TAG = "[[listing:";
@@ -39,7 +41,7 @@ router.get("/", async (req, res) => {
       .from(usersTable).where(eq(usersTable.id, chat.senderId)).limit(1);
     const [receiver] = await db.select({ id: usersTable.id, name: usersTable.name, phone: usersTable.phone })
       .from(usersTable).where(eq(usersTable.id, chat.receiverId)).limit(1);
-    const messages = await db.select({ text: messagesTable.text, createdAt: messagesTable.createdAt })
+    const messages = await db.select({ text: messagesTable.text, type: messagesTable.type, createdAt: messagesTable.createdAt })
       .from(messagesTable).where(eq(messagesTable.chatId, chat.id))
       .orderBy(sql`${messagesTable.createdAt} DESC`).limit(1);
 
@@ -65,7 +67,7 @@ router.get("/", async (req, res) => {
 // Broker model: every chat is between a user and Dalal Iraq (admin).
 // Get-or-create the chat for an optional listing (general consultation when omitted).
 router.post("/", async (req, res) => {
-  const { listingId } = req.body;
+  const { listingId, officeId } = req.body;
   const senderId = req.user!.userId;
 
   const adminId = await getAdminUserId();
@@ -75,6 +77,49 @@ router.post("/", async (req, res) => {
   }
   if (senderId === adminId) {
     res.status(400).json({ error: "الإدارة ترد على المحادثات القائمة فقط" });
+    return;
+  }
+
+  // Office QR flow: scanning a certified office's barcode opens a general chat
+  // and seeds it with a server-verified attribution message. The office name is
+  // read from the DB (not the client) so it cannot be spoofed.
+  if (!listingId && typeof officeId === "string" && officeId.trim()) {
+    const [office] = await db
+      .select({ id: officesTable.id, name: officesTable.name })
+      .from(officesTable)
+      .where(eq(officesTable.id, officeId.trim()))
+      .limit(1);
+    if (!office) {
+      res.status(404).json({ error: "المكتب غير موجود" });
+      return;
+    }
+    const [existingGeneral] = await db.select().from(chatsTable).where(
+      and(isNull(chatsTable.listingId), eq(chatsTable.senderId, senderId), eq(chatsTable.receiverId, adminId)),
+    ).limit(1);
+    let chatId = existingGeneral?.id;
+    if (!chatId) {
+      chatId = randomUUID();
+      await db.insert(chatsTable).values({ id: chatId, listingId: null, senderId, receiverId: adminId });
+      await db.insert(messagesTable).values({
+        id: randomUUID(), chatId, userId: adminId,
+        text: `أهلاً بك في ${DALAL_NAME} 👋 الاستشارة مجانية. كيف نخدمك اليوم؟`,
+      });
+    }
+    await db.insert(messagesTable).values({
+      id: randomUUID(), chatId, userId: senderId,
+      text: `من طرف المكتب المعتمد: ${office.name} (${office.id})\nمرحباً، وصلت إليكم عبر باركود المكتب وأرغب بالاستفسار.`,
+    });
+    try {
+      await createNotification({
+        userId: adminId, type: "message",
+        title: `استفسار عبر المكتب المعتمد: ${office.name}`,
+        body: `وصل عميل عبر باركود المكتب ${office.id}`,
+        link: `/chat?id=${chatId}`,
+      });
+    } catch (err) {
+      req.log.error({ err }, "Failed to notify admin of office QR inquiry");
+    }
+    res.status(201).json({ id: chatId, listingId: null, senderId, receiverId: adminId });
     return;
   }
 
@@ -149,6 +194,8 @@ router.get("/:chatId/messages", async (req, res) => {
     .select({
       id: messagesTable.id,
       text: messagesTable.text,
+      type: messagesTable.type,
+      mediaUrl: messagesTable.mediaUrl,
       userId: messagesTable.userId,
       chatId: messagesTable.chatId,
       createdAt: messagesTable.createdAt,
@@ -164,11 +211,20 @@ router.get("/:chatId/messages", async (req, res) => {
 
 router.post("/:chatId/messages", async (req, res) => {
   const chatId = req.params.chatId as string;
-  const { text } = req.body;
+  const { text, mediaUrl } = req.body as { text?: string; mediaUrl?: string; type?: string };
   const userId = req.user!.userId;
 
-  if (!text?.trim()) {
+  const type = MESSAGE_TYPES.includes(String(req.body?.type)) ? String(req.body.type) : "text";
+  const cleanText = typeof text === "string" ? text.trim() : "";
+  const cleanMedia =
+    typeof mediaUrl === "string" && mediaUrl.startsWith("/objects/") ? mediaUrl : null;
+
+  if (type === "text" && !cleanText) {
     res.status(400).json({ error: "الرسالة فارغة" });
+    return;
+  }
+  if ((type === "image" || type === "voice") && !cleanMedia) {
+    res.status(400).json({ error: "الملف المرفق غير صالح" });
     return;
   }
 
@@ -180,7 +236,7 @@ router.post("/:chatId/messages", async (req, res) => {
 
   const id = randomUUID();
   const [msg] = await db.insert(messagesTable).values({
-    id, chatId, userId, text: text.trim(),
+    id, chatId, userId, type, text: cleanText, mediaUrl: cleanMedia,
   }).returning();
 
   const [user] = await db.select({ id: usersTable.id, name: usersTable.name })
@@ -192,11 +248,12 @@ router.post("/:chatId/messages", async (req, res) => {
     const adminId = await getAdminUserId();
     const fromAdmin = userId === adminId;
     const link = `/chat?id=${chatId}`;
+    const preview = type === "image" ? "📷 صورة" : type === "voice" ? "🎤 رسالة صوتية" : cleanText.slice(0, 120);
     await createNotification({
       userId: recipientId,
       type: "message",
       title: fromAdmin ? `رسالة من ${DALAL_NAME}` : `رسالة جديدة من ${user?.name || "مستخدم"}`,
-      body: text.trim().slice(0, 120),
+      body: preview,
       link,
     });
   } catch (err) {

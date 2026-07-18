@@ -18,3 +18,5 @@ export * from "./inspections";
 export * from "./contracts";
 export * from "./finance";
 export * from "./network-notifications";
+export * from "./areas";
+export * from "./ai-chat";

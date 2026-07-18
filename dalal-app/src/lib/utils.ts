@@ -62,7 +62,7 @@ export const SIZE_FILTERS: { label: string; min: string; max: string }[] = [
 
 export const OWNERSHIP_TYPES = ["طابو صرف", "زراعي"];
 
-export const DEAL_TYPES = ["للبيع", "للايجار", "مباع"];
+export const DEAL_TYPES = ["للبيع", "للايجار", "رهن", "مباع"];
 
 export function formatSize(size?: number | null): string {
   if (size == null) return "";
@@ -112,9 +112,23 @@ export function dealTypeStyle(dealType?: string | null): string {
       return "bg-gray-700 text-white";
     case "للايجار":
       return "bg-blue-500 text-white";
+    case "رهن":
+      return "bg-purple-600 text-white";
     default:
       return "bg-emerald-500 text-white";
   }
+}
+
+// Source label for a listing: certified-office listings show the office name,
+// everything else (admin/network/regular users) shows شبكة دلال العراق.
+export function listingSource(l: { officeName?: string | null }): {
+  kind: "office" | "network";
+  label: string;
+} {
+  if (l.officeName && l.officeName.trim()) {
+    return { kind: "office", label: `من طرف مكتب معتمد: ${l.officeName.trim()}` };
+  }
+  return { kind: "network", label: "من طرف شبكة دلال العراق" };
 }
 
 export function fileToCompressedDataUrl(
@@ -244,6 +258,32 @@ export function removeFromCompare(id: string) {
 }
 export function clearCompare() {
   saveCompare([]);
+}
+
+// ---- Slug & listing URLs ----
+// Build a readable, post-titled slug (Arabic-friendly): keep Arabic letters and
+// digits, turn everything else into single hyphens. Used to make share links
+// like /listings/<id>/دار-للبيع-في-الغزالية instead of a bare UUID.
+export function slugify(title: string): string {
+  return (title || "")
+    .trim()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80)
+    .replace(/-+$/g, "") || "اعلان";
+}
+
+// Canonical in-app path for a listing, titled by its post.
+export function listingPath(id: string, title?: string | null): string {
+  return title ? `/listings/${id}/${encodeURIComponent(slugify(title))}` : `/listings/${id}`;
+}
+
+// Absolute share URL (uses the public site origin when configured).
+export function listingShareUrl(id: string, title?: string | null): string {
+  const origin =
+    (import.meta.env.VITE_PUBLIC_SITE_URL as string | undefined)?.replace(/\/$/, "") ||
+    (typeof window !== "undefined" ? window.location.origin : "");
+  return `${origin}${listingPath(id, title)}`;
 }
 
 // ---- Share helpers ----

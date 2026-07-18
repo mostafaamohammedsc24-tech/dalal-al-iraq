@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { Plus, Trash2, Pencil, X, Home, ShieldCheck, Clock, CheckCircle2 } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Home, ShieldCheck, Clock, CheckCircle2, QrCode, Download } from "lucide-react";
 import { api, getUser, uploadFile, mediaUrl } from "@/lib/api";
 import { CITIES, formatPrice, formatSize } from "@/lib/utils";
 
@@ -43,6 +43,22 @@ export default function OfficeDashboardPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [requestingInspection, setRequestingInspection] = useState<NetworkProperty | null>(null);
+  const [qr, setQr] = useState<{ officeName: string; url: string; qr: string } | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+
+  async function showMyQr() {
+    const u = getUser();
+    if (!u) return;
+    setQrLoading(true);
+    try {
+      const d = await api.get<{ officeName: string; url: string; qr: string }>(`/offices/${u.userId}/qr`);
+      setQr(d);
+    } catch {
+      alert("تعذّر جلب الباركود");
+    } finally {
+      setQrLoading(false);
+    }
+  }
 
   useEffect(() => {
     const u = getUser();
@@ -139,10 +155,36 @@ export default function OfficeDashboardPage() {
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">عقاراتي في الشبكة</h1>
           <p className="text-gray-400 text-sm mt-0.5">أضف عقاراً واطلب فحصاً قانونياً لنشره للمكاتب الأخرى</p>
         </div>
-        <button onClick={openCreate} className="bg-orange-500 text-white rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-1.5 hover:bg-orange-600 transition">
-          <Plus className="w-4 h-4" /> إضافة عقار
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={showMyQr} disabled={qrLoading}
+            className="border border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-400 rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-1.5 hover:bg-purple-50 dark:hover:bg-purple-950 transition disabled:opacity-50">
+            <QrCode className="w-4 h-4" /> باركود المكتب
+          </button>
+          <button onClick={openCreate} className="bg-orange-500 text-white rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-1.5 hover:bg-orange-600 transition">
+            <Plus className="w-4 h-4" /> إضافة عقار
+          </button>
+        </div>
       </div>
+
+      {qr && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setQr(null)}>
+          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 max-w-xs w-full text-center" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-gray-800 dark:text-gray-100">باركود المكتب</h3>
+              <button onClick={() => setQr(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">{qr.officeName}</p>
+            <img src={qr.qr} alt="QR" className="w-56 h-56 mx-auto rounded-xl border border-gray-100 dark:border-gray-800" />
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">اطبع الباركود وضعه في مكتبك — عند مسحه تُفتح محادثة مع دلال العراق منسوبة لمكتبك.</p>
+            <a href={qr.qr} download={`qr-${qr.officeName}.png`}
+              className="mt-4 w-full inline-flex items-center justify-center gap-2 bg-orange-500 text-white py-2.5 rounded-xl font-bold hover:bg-orange-600 transition text-sm">
+              <Download className="w-4 h-4" /> تنزيل الباركود
+            </a>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="text-center text-gray-400 py-16">جاري التحميل...</div>

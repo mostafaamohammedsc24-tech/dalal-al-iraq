@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { eq, and, or, ilike, gte, lte, lt, ne, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
-import { db, listingsTable, usersTable, chatsTable, messagesTable, favoritesTable, priceHistoryTable } from "@workspace/db";
+import { db, listingsTable, usersTable, officesTable, chatsTable, messagesTable, favoritesTable, priceHistoryTable } from "@workspace/db";
 import { authMiddleware, optionalAuth } from "../lib/auth";
 import { getAdminUserId, createNotification } from "../lib/dalal";
 import { notifySavedSearchMatches } from "../lib/saved-search";
@@ -8,29 +8,66 @@ import { randomUUID } from "crypto";
 
 const router = Router();
 
+// Allowed deal types. "رهن" (mortgage/pledge) added alongside sale/rent/sold.
+export const DEAL_TYPES = ["للبيع", "للايجار", "مباع", "رهن"];
+
 const favCountSql = sql<number>`(
   select cast(count(*) as int) from ${favoritesTable}
   where ${favoritesTable.listingId} = ${listingsTable.id}
 )`;
 
-// Average price benchmarks by category (optionally scoped to a city) so users
-// can judge whether a listing is above or below the local market.
+// Price benchmarks so users can judge whether a listing is above/below market.
+// Scopes by category, city, area (neighborhood) and type when provided. The
+// key metric for real estate is price-per-m² within the same area, which is a
+// far fairer comparison than total price across differently-sized properties.
+// Falls back to a broader scope (city, then category) when the narrow area
+// scope has too few data points to be meaningful.
 router.get("/market/stats", async (req, res) => {
-  const { city, category } = req.query as Record<string, string>;
-  const conditions = [eq(listingsTable.status, "active")];
-  if (city) conditions.push(eq(listingsTable.city, city));
-  if (category) conditions.push(eq(listingsTable.category, category));
-  const [row] = await db
-    .select({
-      avgPrice: sql<number>`cast(coalesce(avg(${listingsTable.price}), 0) as double precision)`,
-      minPrice: sql<number>`cast(coalesce(min(${listingsTable.price}), 0) as double precision)`,
-      maxPrice: sql<number>`cast(coalesce(max(${listingsTable.price}), 0) as double precision)`,
-      count: sql<number>`cast(count(*) as int)`,
-      avgPricePerM2: sql<number>`cast(coalesce(avg(case when ${listingsTable.size} > 0 then ${listingsTable.price} / ${listingsTable.size} end), 0) as double precision)`,
-    })
-    .from(listingsTable)
-    .where(and(...conditions));
-  res.json(row);
+  const { city, category, area, type } = req.query as Record<string, string>;
+
+  const MIN_SAMPLE = 3;
+  async function statsFor(conds: SQL[]) {
+    const [row] = await db
+      .select({
+        avgPrice: sql<number>`cast(coalesce(avg(${listingsTable.price}), 0) as double precision)`,
+        minPrice: sql<number>`cast(coalesce(min(${listingsTable.price}), 0) as double precision)`,
+        maxPrice: sql<number>`cast(coalesce(max(${listingsTable.price}), 0) as double precision)`,
+        count: sql<number>`cast(count(*) as int)`,
+        avgPricePerM2: sql<number>`cast(coalesce(avg(case when ${listingsTable.size} > 0 then ${listingsTable.price} / ${listingsTable.size} end), 0) as double precision)`,
+        minPricePerM2: sql<number>`cast(coalesce(min(case when ${listingsTable.size} > 0 then ${listingsTable.price} / ${listingsTable.size} end), 0) as double precision)`,
+        maxPricePerM2: sql<number>`cast(coalesce(max(case when ${listingsTable.size} > 0 then ${listingsTable.price} / ${listingsTable.size} end), 0) as double precision)`,
+        sampleWithSize: sql<number>`cast(count(*) filter (where ${listingsTable.size} > 0) as int)`,
+      })
+      .from(listingsTable)
+      .where(and(...conds));
+    return row;
+  }
+
+  const base = [eq(listingsTable.status, "active")];
+  if (category) base.push(eq(listingsTable.category, category));
+
+  // Narrowest scope first (city + area + type), widening on insufficient data.
+  const scopes: { level: string; conds: SQL[] }[] = [];
+  if (city && area) {
+    const c = [...base, eq(listingsTable.city, city), eq(listingsTable.area, area)];
+    if (type) c.push(eq(listingsTable.type, type));
+    scopes.push({ level: "area", conds: c });
+  }
+  if (city) {
+    const c = [...base, eq(listingsTable.city, city)];
+    if (type) c.push(eq(listingsTable.type, type));
+    scopes.push({ level: "city", conds: c });
+  }
+  scopes.push({ level: "category", conds: base });
+
+  let chosen = await statsFor(scopes[0]!.conds);
+  let scope = scopes[0]!.level;
+  for (let i = 1; i < scopes.length && chosen.count < MIN_SAMPLE; i++) {
+    chosen = await statsFor(scopes[i]!.conds);
+    scope = scopes[i]!.level;
+  }
+
+  res.json({ ...chosen, scope, area: scope === "area" ? area : null, city: scope === "category" ? null : city });
 });
 
 // Public marketing stats for the homepage: active inventory, split by category,
@@ -86,12 +123,12 @@ router.get("/trending", async (req, res) => {
 
 router.get("/", optionalAuth, async (req, res) => {
   const {
-    q, city, category, type, minPrice, maxPrice,
+    q, city, area, category, type, minPrice, maxPrice,
     minSize, maxSize, ownershipType, dealType,
     minBedrooms, minBathrooms, minBuildYear, maxBuildYear,
     minCarYear, maxCarYear, maxMileage,
     lat, lng, radius,
-    userId, limit = "12", page = "1", status,
+    userId, officeId, limit = "12", page = "1", status,
   } = req.query as Record<string, string>;
 
   const conditions = [];
@@ -114,8 +151,16 @@ router.get("/", optionalAuth, async (req, res) => {
     conditions.push(eq(listingsTable.status, isAdmin && status ? status : "active"));
   }
 
-  if (q) conditions.push(ilike(listingsTable.title, `%${q}%`));
+  // Full-text-ish search across both the title AND the description so results
+  // are found by content, not just the headline.
+  if (q) {
+    conditions.push(
+      or(ilike(listingsTable.title, `%${q}%`), ilike(listingsTable.description, `%${q}%`))!,
+    );
+  }
   if (city) conditions.push(eq(listingsTable.city, city));
+  if (area) conditions.push(ilike(listingsTable.area, `%${area}%`));
+  if (officeId) conditions.push(eq(listingsTable.officeId, officeId));
   if (category) conditions.push(eq(listingsTable.category, category));
   if (type) conditions.push(eq(listingsTable.type, type));
   if (minPrice) conditions.push(gte(listingsTable.price, parseFloat(minPrice)));
@@ -168,6 +213,7 @@ router.get("/", optionalAuth, async (req, res) => {
         category: listingsTable.category,
         type: listingsTable.type,
         city: listingsTable.city,
+        area: listingsTable.area,
         size: listingsTable.size,
         bedrooms: listingsTable.bedrooms,
         bathrooms: listingsTable.bathrooms,
@@ -186,6 +232,9 @@ router.get("/", optionalAuth, async (req, res) => {
         status: listingsTable.status,
         createdAt: listingsTable.createdAt,
         bumpedAt: listingsTable.bumpedAt,
+        officeId: listingsTable.officeId,
+        officeName: officesTable.name,
+        publisherRole: usersTable.role,
         favoritesCount: userId ? favCountSql : sql<number>`0`,
         distanceKm: distanceExpr ? distanceExpr : sql<number | null>`null`,
         user: {
@@ -195,6 +244,7 @@ router.get("/", optionalAuth, async (req, res) => {
       })
       .from(listingsTable)
       .leftJoin(usersTable, eq(listingsTable.userId, usersTable.id))
+      .leftJoin(officesTable, eq(listingsTable.officeId, officesTable.id))
       .where(where)
       .orderBy(orderBy)
       .limit(limitN)
@@ -240,6 +290,9 @@ router.get("/:id", optionalAuth, async (req, res) => {
       status: listingsTable.status,
       createdAt: listingsTable.createdAt,
       favoritesCount: favCountSql,
+      officeId: listingsTable.officeId,
+      officeName: officesTable.name,
+      publisherRole: usersTable.role,
       user: {
         id: usersTable.id,
         name: usersTable.name,
@@ -247,6 +300,7 @@ router.get("/:id", optionalAuth, async (req, res) => {
     })
     .from(listingsTable)
     .leftJoin(usersTable, eq(listingsTable.userId, usersTable.id))
+    .leftJoin(officesTable, eq(listingsTable.officeId, officesTable.id))
     .where(eq(listingsTable.id, id))
     .limit(1);
 
@@ -449,7 +503,7 @@ router.patch("/:id", authMiddleware, async (req, res) => {
   if (typeof body.area === "string") updates.area = body.area.trim() || null;
   if (typeof body.city === "string" && body.city.trim()) updates.city = body.city.trim();
   if (typeof body.type === "string" && body.type.trim()) updates.type = body.type.trim();
-  if (typeof body.dealType === "string" && ["للبيع", "للايجار", "مباع"].includes(body.dealType)) updates.dealType = body.dealType;
+  if (typeof body.dealType === "string" && DEAL_TYPES.includes(body.dealType)) updates.dealType = body.dealType;
   if (typeof body.status === "string" && ["active", "hidden", "sold"].includes(body.status)) updates.status = body.status;
   if ("size" in body) updates.size = body.size != null && body.size !== "" && !Number.isNaN(parseFloat(String(body.size))) ? parseFloat(String(body.size)) : null;
   if ("bedrooms" in body) updates.bedrooms = intOrNull(body.bedrooms, 0, 50);
@@ -463,6 +517,16 @@ router.patch("/:id", authMiddleware, async (req, res) => {
     if (typeof body.verified === "boolean") updates.verified = body.verified;
     if (typeof body.featured === "boolean") updates.featured = body.featured;
     if (typeof body.pinned === "boolean") updates.pinned = body.pinned;
+    // Attribute (or clear) a listing to a certified office for the source label.
+    if ("officeId" in body) {
+      const oid = typeof body.officeId === "string" ? body.officeId.trim() : "";
+      if (!oid) {
+        updates.officeId = null;
+      } else {
+        const [office] = await db.select({ id: officesTable.id }).from(officesTable).where(eq(officesTable.id, oid)).limit(1);
+        updates.officeId = office ? oid : null;
+      }
+    }
   }
 
   // Price change handling.
@@ -560,7 +624,7 @@ router.post("/", authMiddleware, async (req, res) => {
   const {
     title, description, price, category, type, city, area, images, size,
     ownershipType, video, dealType, latitude, longitude,
-    bedrooms, bathrooms, buildYear, carYear, mileage,
+    bedrooms, bathrooms, buildYear, carYear, mileage, officeId,
   } = req.body;
 
   if (!title || !description || !price || !category || !type || !city) {
@@ -583,7 +647,13 @@ router.post("/", authMiddleware, async (req, res) => {
 
   const cleanVideo =
     typeof video === "string" && video.startsWith("/objects/") ? video : null;
-  const cleanDealType = ["للبيع", "للايجار", "مباع"].includes(dealType) ? dealType : "للبيع";
+  const cleanDealType = DEAL_TYPES.includes(dealType) ? dealType : "للبيع";
+  // Only an admin may attribute a listing to a certified office at creation.
+  let cleanOfficeId: string | null = null;
+  if (req.user!.role === "admin" && typeof officeId === "string" && officeId.trim()) {
+    const [office] = await db.select({ id: officesTable.id }).from(officesTable).where(eq(officesTable.id, officeId.trim())).limit(1);
+    cleanOfficeId = office ? officeId.trim() : null;
+  }
   const cleanOwnership =
     typeof ownershipType === "string" && ["طابو صرف", "زراعي"].includes(ownershipType)
       ? ownershipType
@@ -627,6 +697,7 @@ router.post("/", authMiddleware, async (req, res) => {
     longitude: hasCoords ? lngNum : null,
     ownershipType: cleanOwnership,
     dealType: cleanDealType,
+    officeId: cleanOfficeId,
     video: cleanVideo,
     images: cleanImages,
     userId,
