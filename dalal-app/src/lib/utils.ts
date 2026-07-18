@@ -260,6 +260,32 @@ export function clearCompare() {
   saveCompare([]);
 }
 
+// ---- Slug & listing URLs ----
+// Build a readable, post-titled slug (Arabic-friendly): keep Arabic letters and
+// digits, turn everything else into single hyphens. Used to make share links
+// like /listings/<id>/دار-للبيع-في-الغزالية instead of a bare UUID.
+export function slugify(title: string): string {
+  return (title || "")
+    .trim()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80)
+    .replace(/-+$/g, "") || "اعلان";
+}
+
+// Canonical in-app path for a listing, titled by its post.
+export function listingPath(id: string, title?: string | null): string {
+  return title ? `/listings/${id}/${encodeURIComponent(slugify(title))}` : `/listings/${id}`;
+}
+
+// Absolute share URL (uses the public site origin when configured).
+export function listingShareUrl(id: string, title?: string | null): string {
+  const origin =
+    (import.meta.env.VITE_PUBLIC_SITE_URL as string | undefined)?.replace(/\/$/, "") ||
+    (typeof window !== "undefined" ? window.location.origin : "");
+  return `${origin}${listingPath(id, title)}`;
+}
+
 // ---- Share helpers ----
 export async function shareListing(opts: {
   title: string;

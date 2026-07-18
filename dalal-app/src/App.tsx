@@ -46,7 +46,7 @@ function Router() {
         <Switch>
           <Route path="/" component={HomePage} />
           <Route path="/listings" component={ListingsPage} />
-          <Route path="/listings/:id" component={ListingDetailPage} />
+          <Route path="/listings/:id/:slug?" component={ListingDetailPage} />
           <Route path="/compare" component={ComparePage} />
           <Route path="/offices/:id" component={OfficeDetailPage} />
           <Route path="/login" component={LoginPage} />

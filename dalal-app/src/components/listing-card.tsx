@@ -10,6 +10,7 @@ import {
   isInCompare,
   toggleCompare,
   listingSource,
+  listingPath,
   cn,
 } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -93,7 +94,7 @@ export function ListingCard({ listing }: { listing: ListingItem }) {
           images={listing.images}
           video={listing.video}
           category={listing.category}
-          linkHref={`/listings/${listing.id}`}
+          linkHref={listingPath(listing.id, listing.title)}
           heightClass="h-40"
         />
         <div className="absolute top-2 right-2 flex flex-col gap-1 items-end z-10 pointer-events-none">
@@ -144,7 +145,7 @@ export function ListingCard({ listing }: { listing: ListingItem }) {
         )}
       </div>
 
-      <Link href={`/listings/${listing.id}`} className="block p-3">
+      <Link href={listingPath(listing.id, listing.title)} className="block p-3">
         <div className="flex items-center gap-1.5 mb-1">
           <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
             listing.category === "عقارات"

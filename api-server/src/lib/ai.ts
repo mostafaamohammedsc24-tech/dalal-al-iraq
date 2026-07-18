@@ -72,6 +72,18 @@ const EXTRACT_SYSTEM = `أنت مساعد لاستخراج معايير البح
 }
 لا تكتب أي شرح، فقط JSON.`;
 
+// The model often returns a price like `200` when the user said "200 مليون".
+// Recover the intended magnitude from the original message so a real listing
+// isn't filtered out by an off-by-1000000 bound.
+function normalizePrice(n: number | null, userMessage: string): number | null {
+  if (n == null) return null;
+  if (n >= 100_000) return n; // already a full IQD amount
+  if (/مليار/.test(userMessage)) return n * 1_000_000_000;
+  if (/مليون/.test(userMessage)) return n * 1_000_000;
+  if (/(ألف|الف)/.test(userMessage)) return n * 1_000;
+  return n;
+}
+
 export async function extractSearchParams(userMessage: string): Promise<SearchParams> {
   const raw = await ollamaChat(
     [
@@ -98,8 +110,8 @@ export async function extractSearchParams(userMessage: string): Promise<SearchPa
       city: str(parsed.city),
       area: str(parsed.area),
       type: str(parsed.type),
-      minPrice: num(parsed.minPrice),
-      maxPrice: num(parsed.maxPrice),
+      minPrice: normalizePrice(num(parsed.minPrice), userMessage),
+      maxPrice: normalizePrice(num(parsed.maxPrice), userMessage),
       minSize: num(parsed.minSize),
       maxSize: num(parsed.maxSize),
       minBedrooms: num(parsed.minBedrooms),
@@ -123,35 +135,53 @@ export interface AiListing {
   type: string;
 }
 
-const FORMAT_SYSTEM = `أنت "مساعد دلال العراق" الذكي. مهمتك صياغة نتائج بحث عقاري/سيارات بالعربية بأسلوب ودود ومختصر.
-استخدم فقط العقارات المزوّدة في البيانات. لا تخترع عقارات أو أسعاراً غير موجودة.
-اذكر لكل نتيجة: العنوان، السعر، المدينة/المنطقة، وأهم التفاصيل. اجعل الرد منظّماً وسهل القراءة.`;
+// Human-readable IQD price in the same style the site uses ("175 مليون د.ع").
+// Kept deterministic so listing prices are NEVER passed through the LLM.
+export function formatPriceIQ(price: number): string {
+  if (!Number.isFinite(price) || price <= 0) return "السعر عند الطلب";
+  const trim = (v: number) => String(Math.round(v * 100) / 100).replace(/\.0+$/, "");
+  if (price >= 1_000_000_000) return `${trim(price / 1_000_000_000)} مليار د.ع`;
+  if (price >= 1_000_000) return `${trim(price / 1_000_000)} مليون د.ع`;
+  if (price >= 1_000) return `${trim(price / 1_000)} ألف د.ع`;
+  return `${price} د.ع`;
+}
 
-export async function formatResults(userMessage: string, listings: AiListing[]): Promise<string> {
-  const data = listings
+// Deterministic rendering of the DB rows. All numbers come straight from
+// PostgreSQL — the model is never allowed to (re)write prices/sizes.
+export function renderListings(listings: AiListing[]): string {
+  return listings
     .map(
       (l, i) =>
-        `${i + 1}. ${l.title} | السعر: ${l.price} د.ع | ${l.city}${l.area ? " - " + l.area : ""}` +
-        `${l.size ? " | المساحة: " + l.size + " م²" : ""}${l.bedrooms ? " | غرف: " + l.bedrooms : ""}` +
-        ` | ${l.dealType || "للبيع"}`,
+        `${i + 1}. ${l.title} — ${formatPriceIQ(l.price)}، ${l.city}${l.area ? " - " + l.area : ""}` +
+        `${l.size ? `، ${l.size} م²` : ""}${l.bedrooms ? `، ${l.bedrooms} غرف` : ""} (${l.dealType || "للبيع"})`,
     )
     .join("\n");
-  return ollamaChat([
-    { role: "system", content: FORMAT_SYSTEM },
-    {
-      role: "user",
-      content: `طلب المستخدم: ${userMessage}\n\nالعقارات المتوفرة:\n${data}\n\nصُغ رداً عربياً يعرض هذه النتائج.`,
-    },
-  ]);
+}
+
+const INTRO_SYSTEM = `أنت "مساعد دلال العراق". اكتب جملة افتتاحية واحدة قصيرة وودودة بالعربية تمهّد لعرض نتائج البحث.
+ممنوع منعاً باتاً ذكر أي أرقام أو أسعار أو مساحات أو أسماء عقارات — التمهيد عام فقط.
+مثال: "إليك أفضل ما وجدته لك:". لا تكتب أكثر من جملة واحدة.`;
+
+// The LLM only writes a friendly intro sentence (no data); the accurate
+// listing details are appended deterministically from the DB rows.
+export async function formatResults(userMessage: string, listings: AiListing[]): Promise<string> {
+  let intro = "";
+  try {
+    intro = await ollamaChat([
+      { role: "system", content: INTRO_SYSTEM },
+      { role: "user", content: `طلب المستخدم: ${userMessage}\nعدد النتائج: ${listings.length}` },
+    ]);
+  } catch {
+    intro = "";
+  }
+  // Discard the intro entirely if the model sneaked in any digit.
+  if (/[0-9\u0660-\u0669]/.test(intro)) intro = "";
+  if (!intro) intro = `وجدت لك ${listings.length} نتيجة مطابقة:`;
+  return `${intro.trim()}\n\n${renderListings(listings)}`;
 }
 
 export function fallbackFormat(listings: AiListing[]): string {
-  const lines = listings.map(
-    (l, i) =>
-      `${i + 1}. ${l.title} — ${l.price.toLocaleString("ar-IQ")} د.ع، ${l.city}${l.area ? " - " + l.area : ""}` +
-      `${l.size ? `، ${l.size} م²` : ""}${l.bedrooms ? `، ${l.bedrooms} غرف` : ""} (${l.dealType || "للبيع"})`,
-  );
-  return `وجدت لك ${listings.length} نتيجة مطابقة:\n\n${lines.join("\n")}`;
+  return `وجدت لك ${listings.length} نتيجة مطابقة:\n\n${renderListings(listings)}`;
 }
 
 export const NO_RESULTS_MESSAGE =

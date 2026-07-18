@@ -144,6 +144,19 @@ export default function ChatPage() {
       .catch(() => setMessages([]));
   }, [chatId]);
 
+  // Open (or create) the direct conversation with Dalal Iraq network
+  // (the general, listing-less consultation). Kept prominent and separate
+  // from the AI assistant so users always have a human network channel.
+  async function openNetworkChat() {
+    const general = chats.find((c) => c.listing.id === null);
+    if (general) { navigate(`/chat?id=${general.id}`); return; }
+    try {
+      const c = await api.post<{ id: string }>("/chats", {});
+      await loadChats();
+      navigate(`/chat?id=${c.id}`);
+    } catch { /* ignore */ }
+  }
+
   async function send(e: React.FormEvent) {
     e.preventDefault();
     if (!text.trim() || !chatId) return;
@@ -346,19 +359,41 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* AI assistant is a separate conversation with its own history. */}
-          <button onClick={() => navigate("/chat?ai=1")}
-            className="w-full bg-gradient-to-br from-purple-50 to-orange-50 dark:from-purple-950/40 dark:to-orange-950/40 rounded-2xl p-4 shadow-sm border border-purple-100 dark:border-purple-900 hover:border-purple-300 dark:hover:border-purple-700 transition text-right flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-orange-500 rounded-xl flex items-center justify-center text-white flex-shrink-0">
-              <Sparkles className="w-6 h-6" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">المساعد الذكي</p>
-              <p className="text-gray-500 dark:text-gray-400 text-xs line-clamp-1">اسأل عن العقارات والسيارات وسأبحث لك فوراً</p>
-            </div>
-          </button>
+          {/* Two distinct conversations, side by side: the human network and the AI. */}
+          {!isAdminMe && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+              {/* Direct conversation with Dalal Iraq network (human broker). */}
+              <button onClick={openNetworkChat}
+                className="w-full bg-gradient-to-br from-emerald-50 to-orange-50 dark:from-emerald-950/40 dark:to-orange-950/40 rounded-2xl p-4 shadow-sm border border-emerald-100 dark:border-emerald-900 hover:border-emerald-300 dark:hover:border-emerald-700 transition text-right flex items-center gap-3">
+                <img src={LOGO_URL} alt={DALAL_NAME} className="w-12 h-12 rounded-xl object-cover flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-gray-800 dark:text-gray-100 text-sm flex items-center gap-1">
+                    {DALAL_NAME}
+                    <BadgeCheck className="w-3.5 h-3.5 text-emerald-500" />
+                  </p>
+                  <p className="text-gray-500 dark:text-gray-400 text-xs line-clamp-1">محادثة مباشرة مع فريق الشبكة — استشارة مجانية</p>
+                </div>
+              </button>
 
-          {chats.length === 0 ? (
+              {/* AI assistant is a separate conversation with its own history. */}
+              <button onClick={() => navigate("/chat?ai=1")}
+                className="w-full bg-gradient-to-br from-purple-50 to-orange-50 dark:from-purple-950/40 dark:to-orange-950/40 rounded-2xl p-4 shadow-sm border border-purple-100 dark:border-purple-900 hover:border-purple-300 dark:hover:border-purple-700 transition text-right flex items-center gap-3">
+                <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-orange-500 rounded-xl flex items-center justify-center text-white flex-shrink-0">
+                  <Sparkles className="w-6 h-6" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">المساعد الذكي</p>
+                  <p className="text-gray-500 dark:text-gray-400 text-xs line-clamp-1">اسأل عن العقارات والسيارات وسأبحث لك فوراً</p>
+                </div>
+              </button>
+            </div>
+          )}
+
+          {(() => {
+            // The general (listing-less) network chat is represented by the
+            // dedicated card above, so hide it from the list for regular users.
+            const listChats = isAdminMe ? chats : chats.filter((c) => c.listing.id !== null);
+            return listChats.length === 0 ? (
             <div className="text-center py-16 text-gray-400">
               <MessageCircle className="w-14 h-14 mx-auto mb-4 opacity-20" />
               <p>لا توجد محادثات بعد</p>
@@ -366,7 +401,7 @@ export default function ChatPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {chats.map((chat) => {
+              {listChats.map((chat) => {
                 const label = chatLabel(chat);
                 const lastMsg = chat.messages?.[0];
                 const preview =
@@ -401,7 +436,8 @@ export default function ChatPage() {
                 );
               })}
             </div>
-          )}
+          );
+          })()}
         </div>
       )}
     </div>

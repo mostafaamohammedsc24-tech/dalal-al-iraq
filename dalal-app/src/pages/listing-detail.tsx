@@ -8,6 +8,7 @@ import {
 import {
   formatPrice, timeAgo, formatSize, dealTypeStyle, formatCoords, mapsLink,
   formatMileage, marketPosition, addRecentlyViewed, listingSource,
+  listingPath, listingShareUrl,
 } from "@/lib/utils";
 import { api, getUser } from "@/lib/api";
 import { useT } from "@/lib/i18n";
@@ -41,7 +42,7 @@ interface MarketStats {
 }
 
 export default function ListingDetailPage() {
-  const [, params] = useRoute("/listings/:id");
+  const [, params] = useRoute("/listings/:id/:slug?");
   const [, navigate] = useLocation();
   const id = params?.id;
 
@@ -66,6 +67,11 @@ export default function ListingDetailPage() {
       .then((l) => {
         setListing(l);
         addRecentlyViewed(l.id);
+        // Normalize the address bar to the readable, post-titled URL.
+        if (!params?.slug) {
+          const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+          window.history.replaceState(null, "", base + listingPath(l.id, l.title));
+        }
         const p = new URLSearchParams({ category: l.category });
         if (l.city) p.set("city", l.city);
         if (l.area) p.set("area", l.area);
@@ -168,7 +174,11 @@ export default function ListingDetailPage() {
         </div>
         <div className="absolute top-3 left-3 flex items-center gap-1.5 z-10">
           <FavoriteButton listingId={listing.id} />
-          <ShareButton title={listing.title} text={listing.title} url={window.location.href} />
+          <ShareButton
+            title={listing.title}
+            text={`${listing.title} — ${formatPrice(listing.price)}`}
+            url={listingShareUrl(listing.id, listing.title)}
+          />
         </div>
       </div>
 
