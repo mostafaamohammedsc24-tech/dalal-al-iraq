@@ -1,0 +1,783 @@
+#!/usr/bin/env bash
+# =============================================================================
+# dalal-fix  —  إصلاح عدم ظهور العقارات في واجهة المكاتب (خانة بحث الشبكة)
+# -----------------------------------------------------------------------------
+# يجعل تبويب «عقارات الشبكة» يعرض كل العروض للمكاتب:
+#   • عقارات الشبكة (من الشبكة ومن المكاتب الأخرى) بما فيها قيد التدقيق
+#   • إعلانات الأفراد العامة (من الناس أنفسهم ومن المكاتب)
+#
+# طريقة الاستخدام:
+#   1) ضع هذا الملف داخل مجلد المشروع (جذر مستودع dalal-al-iraq) أو أي مكان بداخله
+#   2) نفّذه:   bash dalal-fix.sh
+#   3) أعد البناء والتشغيل:
+#        pnpm --filter @workspace/api-server run build
+#        pnpm --filter @workspace/dalal-app  run build
+#        ./run-local.sh
+#
+# ملاحظات:
+#   • ينشئ نسخة احتياطية لكل ملف قبل تعديله بامتداد .bak-dalal-fix
+#   • آمن لإعادة التشغيل (idempotent): يكتب النسخة المصححة الكاملة في كل مرة
+# =============================================================================
+set -euo pipefail
+
+say() { printf '\033[1;33m[dalal-fix]\033[0m %s\n' "$1"; }
+ok()  { printf '\033[1;32m[dalal-fix]\033[0m %s\n' "$1"; }
+err() { printf '\033[1;31m[dalal-fix]\033[0m %s\n' "$1" >&2; }
+
+# --- تحديد جذر المستودع ------------------------------------------------------
+find_root() {
+  local dir="$1"
+  while [ "$dir" != "/" ]; do
+    if [ -f "$dir/api-server/src/routes/network-properties.ts" ] \
+       && [ -f "$dir/dalal-app/src/pages/office-network.tsx" ]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(find_root "$SCRIPT_DIR" || true)"
+if [ -z "${ROOT:-}" ]; then
+  ROOT="$(find_root "$PWD" || true)"
+fi
+if [ -z "${ROOT:-}" ]; then
+  err "تعذّر العثور على جذر مشروع dalal-al-iraq. ضع السكربت داخل المشروع ثم أعد المحاولة."
+  exit 1
+fi
+say "جذر المشروع: $ROOT"
+
+# --- api-server/src/routes/network-properties.ts ---
+write_target_14602() {
+  local rel="api-server/src/routes/network-properties.ts"; local abs="$ROOT/$rel"
+  mkdir -p "$(dirname "$abs")"
+  if [ -f "$abs" ] && [ ! -f "$abs.bak-dalal-fix" ]; then
+    cp "$abs" "$abs.bak-dalal-fix"
+    say "نسخة احتياطية: $rel.bak-dalal-fix"
+  fi
+  cat > "$abs" <<'DALAL_FIX_EOF_9271_14602'
+import { Router } from "express";
+import { eq, and, ne, sql } from "drizzle-orm";
+import { randomUUID } from "crypto";
+import {
+  db,
+  networkPropertiesTable,
+  mediationRequestsTable,
+  referralsTable,
+  officesTable,
+  listingsTable,
+  usersTable,
+} from "@workspace/db";
+import { authMiddleware, requireRole } from "../lib/auth";
+import { notifyNetwork } from "../lib/dalal";
+
+const router = Router();
+
+const PROPERTY_TYPES = ["أرض", "شقة", "دار", "محل"];
+
+function officeSelect() {
+  return {
+    id: officesTable.id,
+    name: officesTable.name,
+    phone: officesTable.phone,
+    city: officesTable.city,
+  };
+}
+
+// خانة البحث للشبكة: تعرض كل العروض للمكاتب — عقارات الشبكة (من الشبكة ومن
+// المكاتب الأخرى) بالإضافة إلى إعلانات الأفراد العامة (من الناس أنفسهم ومن
+// المكاتب). كل عنصر يحمل حقل source للتمييز بين المصدرين في الواجهة.
+router.get("/", authMiddleware, requireRole("office"), async (req, res) => {
+  const { city, type } = req.query as Record<string, string>;
+
+  // 1) عقارات شبكة المكاتب — تُعرض جميعها عدا المباعة (بما فيها قيد التدقيق).
+  const npConditions = [ne(networkPropertiesTable.status, "sold")];
+  if (city) npConditions.push(eq(networkPropertiesTable.city, city));
+  if (type) npConditions.push(eq(networkPropertiesTable.type, type));
+  const networkRows = await db
+    .select({ property: networkPropertiesTable, office: officeSelect() })
+    .from(networkPropertiesTable)
+    .leftJoin(officesTable, eq(networkPropertiesTable.officeId, officesTable.id))
+    .where(and(...npConditions))
+    .orderBy(sql`${networkPropertiesTable.createdAt} DESC`)
+    .limit(200);
+
+  // 2) إعلانات الأفراد العامة (عقارات نشطة) — من الناس أنفسهم ومن المكاتب.
+  const listingConditions = [
+    eq(listingsTable.status, "active"),
+    eq(listingsTable.category, "عقارات"),
+  ];
+  if (city) listingConditions.push(eq(listingsTable.city, city));
+  if (type) listingConditions.push(eq(listingsTable.type, type));
+  const listingRows = await db
+    .select({ listing: listingsTable, office: officeSelect(), ownerName: usersTable.name })
+    .from(listingsTable)
+    .leftJoin(officesTable, eq(listingsTable.officeId, officesTable.id))
+    .leftJoin(usersTable, eq(listingsTable.userId, usersTable.id))
+    .where(and(...listingConditions))
+    .orderBy(sql`${listingsTable.createdAt} DESC`)
+    .limit(200);
+
+  type UnifiedProperty = {
+    id: string;
+    source: "network" | "listing";
+    officeId: string | null;
+    type: string;
+    city: string;
+    area: string | null;
+    price: number;
+    size: number | null;
+    rooms: number | null;
+    images: string[];
+    status: string;
+    title: string | null;
+    ownerName: string | null;
+    createdAt: Date;
+  };
+
+  const networkProps: { property: UnifiedProperty; office: typeof networkRows[number]["office"] }[] =
+    networkRows.map((r) => ({
+      property: {
+        id: r.property.id,
+        source: "network",
+        officeId: r.property.officeId,
+        type: r.property.type,
+        city: r.property.city,
+        area: r.property.area,
+        price: r.property.price,
+        size: r.property.size,
+        rooms: r.property.rooms,
+        images: r.property.images,
+        status: r.property.status,
+        title: null,
+        ownerName: r.office?.name ?? null,
+        createdAt: r.property.createdAt,
+      },
+      office: r.office,
+    }));
+
+  const listingProps: { property: UnifiedProperty; office: typeof listingRows[number]["office"] }[] =
+    listingRows.map((r) => ({
+      property: {
+        id: r.listing.id,
+        source: "listing",
+        officeId: r.listing.officeId,
+        type: r.listing.type,
+        city: r.listing.city,
+        area: r.listing.area,
+        price: r.listing.price,
+        size: r.listing.size,
+        rooms: r.listing.bedrooms,
+        images: r.listing.images,
+        status: r.listing.status,
+        title: r.listing.title,
+        ownerName: r.office?.name ?? r.ownerName ?? null,
+        createdAt: r.listing.createdAt,
+      },
+      office: r.office,
+    }));
+
+  const properties = [...networkProps, ...listingProps].sort(
+    (a, b) => new Date(b.property.createdAt).getTime() - new Date(a.property.createdAt).getTime(),
+  );
+  res.json({ properties });
+});
+
+router.get("/mine", authMiddleware, requireRole("office"), async (req, res) => {
+  const officeId = req.user!.userId;
+  const properties = await db
+    .select()
+    .from(networkPropertiesTable)
+    .where(eq(networkPropertiesTable.officeId, officeId))
+    .orderBy(sql`${networkPropertiesTable.createdAt} DESC`);
+  res.json({ properties });
+});
+
+router.get("/:id", authMiddleware, requireRole("office"), async (req, res) => {
+  const id = req.params.id as string;
+  const [row] = await db
+    .select({ property: networkPropertiesTable, office: officeSelect() })
+    .from(networkPropertiesTable)
+    .leftJoin(officesTable, eq(networkPropertiesTable.officeId, officesTable.id))
+    .where(eq(networkPropertiesTable.id, id))
+    .limit(1);
+  if (!row) {
+    res.status(404).json({ error: "العقار غير موجود" });
+    return;
+  }
+  res.json(row);
+});
+
+router.post("/", authMiddleware, requireRole("office"), async (req, res) => {
+  const { type, city, area, price, size, rooms, description, images, video } = req.body as Record<string, unknown>;
+  if (!type || !PROPERTY_TYPES.includes(String(type))) {
+    res.status(400).json({ error: "نوع العقار غير صالح" });
+    return;
+  }
+  if (!city || !price || !Number.isFinite(parseFloat(String(price)))) {
+    res.status(400).json({ error: "المحافظة والسعر مطلوبان" });
+    return;
+  }
+  const [property] = await db
+    .insert(networkPropertiesTable)
+    .values({
+      id: randomUUID(),
+      officeId: req.user!.userId,
+      type: String(type),
+      city: String(city),
+      area: typeof area === "string" ? area.trim() || null : null,
+      price: parseFloat(String(price)),
+      size: size != null && Number.isFinite(parseFloat(String(size))) ? parseFloat(String(size)) : null,
+      rooms: rooms != null && Number.isFinite(parseInt(String(rooms))) ? parseInt(String(rooms)) : null,
+      description: typeof description === "string" ? description.trim().slice(0, 2000) || null : null,
+      images: Array.isArray(images) ? images.slice(0, 15).map(String) : [],
+      video: typeof video === "string" ? video.trim() || null : null,
+      status: "pending_audit",
+    })
+    .returning();
+  res.status(201).json(property);
+});
+
+router.patch("/:id", authMiddleware, requireRole("office"), async (req, res) => {
+  const id = req.params.id as string;
+  const [existing] = await db.select().from(networkPropertiesTable).where(eq(networkPropertiesTable.id, id)).limit(1);
+  if (!existing || existing.officeId !== req.user!.userId) {
+    res.status(404).json({ error: "العقار غير موجود" });
+    return;
+  }
+  const { type, city, area, price, size, rooms, description, images, video, status } = req.body as Record<string, unknown>;
+  const updates: Partial<typeof networkPropertiesTable.$inferInsert> = { updatedAt: sql`now()` as unknown as Date };
+  if (typeof type === "string" && PROPERTY_TYPES.includes(type)) updates.type = type;
+  if (typeof city === "string") updates.city = city;
+  if (typeof area === "string") updates.area = area.trim() || null;
+  if (price != null && Number.isFinite(parseFloat(String(price)))) updates.price = parseFloat(String(price));
+  if (size != null && Number.isFinite(parseFloat(String(size)))) updates.size = parseFloat(String(size));
+  if (rooms != null && Number.isFinite(parseInt(String(rooms)))) updates.rooms = parseInt(String(rooms));
+  if (typeof description === "string") updates.description = description.trim().slice(0, 2000) || null;
+  if (Array.isArray(images)) updates.images = images.slice(0, 15).map(String);
+  if (typeof video === "string") updates.video = video.trim() || null;
+  if (typeof status === "string") {
+    if (!["pending_audit", "available", "pending", "sold"].includes(status)) {
+      res.status(400).json({ error: "حالة غير صالحة" });
+      return;
+    }
+    // لا يمكن نشر العقار كـ "متاح" قبل استكمال الفحص القانوني ورفع التقرير.
+    if (status === "available" && !existing.inspectionReportUrl) {
+      res.status(400).json({ error: "لا يمكن نشر العقار كمتاح قبل رفع تقرير الفحص القانوني" });
+      return;
+    }
+    updates.status = status;
+  }
+  const [property] = await db.update(networkPropertiesTable).set(updates).where(eq(networkPropertiesTable.id, id)).returning();
+  res.json(property);
+});
+
+router.delete("/:id", authMiddleware, requireRole("office"), async (req, res) => {
+  const id = req.params.id as string;
+  const [existing] = await db.select().from(networkPropertiesTable).where(eq(networkPropertiesTable.id, id)).limit(1);
+  if (!existing || existing.officeId !== req.user!.userId) {
+    res.status(404).json({ error: "العقار غير موجود" });
+    return;
+  }
+  await db.delete(networkPropertiesTable).where(eq(networkPropertiesTable.id, id));
+  res.json({ ok: true });
+});
+
+// ---------- طلبات الوساطة ----------
+
+router.get("/mediation/mine", authMiddleware, requireRole("office"), async (req, res) => {
+  const officeId = req.user!.userId;
+  const requests = await db
+    .select()
+    .from(mediationRequestsTable)
+    .where(sql`${mediationRequestsTable.requestingOfficeId} = ${officeId} or ${mediationRequestsTable.ownerOfficeId} = ${officeId}`)
+    .orderBy(sql`${mediationRequestsTable.createdAt} DESC`);
+  res.json({ requests });
+});
+
+router.post("/:id/mediation-requests", authMiddleware, requireRole("office"), async (req, res) => {
+  const propertyId = req.params.id as string;
+  const requestingOfficeId = req.user!.userId;
+  const [property] = await db.select().from(networkPropertiesTable).where(eq(networkPropertiesTable.id, propertyId)).limit(1);
+  if (!property) {
+    res.status(404).json({ error: "العقار غير موجود" });
+    return;
+  }
+  if (property.officeId === requestingOfficeId) {
+    res.status(400).json({ error: "لا يمكنك طلب وساطة على عقار مكتبك" });
+    return;
+  }
+  const [request] = await db
+    .insert(mediationRequestsTable)
+    .values({
+      id: randomUUID(),
+      propertyId,
+      requestingOfficeId,
+      ownerOfficeId: property.officeId,
+    })
+    .returning();
+  await notifyNetwork({
+    recipientType: "office",
+    recipientId: property.officeId,
+    type: "mediation_request",
+    title: "طلب وساطة جديد",
+    body: "مكتب آخر طلب الوساطة على أحد عقاراتك في الشبكة.",
+    link: "/office/network",
+  });
+  res.status(201).json(request);
+});
+
+router.patch("/mediation-requests/:id", authMiddleware, requireRole("office"), async (req, res) => {
+  const id = req.params.id as string;
+  const { status, commissionAmount } = req.body as { status?: string; commissionAmount?: number };
+  const [request] = await db.select().from(mediationRequestsTable).where(eq(mediationRequestsTable.id, id)).limit(1);
+  if (!request || request.ownerOfficeId !== req.user!.userId) {
+    res.status(404).json({ error: "الطلب غير موجود" });
+    return;
+  }
+  if (!status || !["accepted", "rejected", "completed"].includes(status)) {
+    res.status(400).json({ error: "حالة غير صالحة" });
+    return;
+  }
+  const [updated] = await db
+    .update(mediationRequestsTable)
+    .set({ status, commissionAmount: commissionAmount != null ? Number(commissionAmount) : request.commissionAmount })
+    .where(eq(mediationRequestsTable.id, id))
+    .returning();
+  await notifyNetwork({
+    recipientType: "office",
+    recipientId: request.requestingOfficeId,
+    type: "mediation_update",
+    title: status === "accepted" ? "تم قبول طلب الوساطة" : status === "rejected" ? "تم رفض طلب الوساطة" : "اكتملت الوساطة",
+    body: "تحقق من حالة طلب الوساطة الخاص بك.",
+    link: "/office/network",
+  });
+  res.json(updated);
+});
+
+// ---------- الإحالات ----------
+
+router.get("/referrals/mine", authMiddleware, requireRole("office"), async (req, res) => {
+  const officeId = req.user!.userId;
+  const referrals = await db
+    .select()
+    .from(referralsTable)
+    .where(sql`${referralsTable.referringOfficeId} = ${officeId} or ${referralsTable.ownerOfficeId} = ${officeId}`)
+    .orderBy(sql`${referralsTable.createdAt} DESC`);
+  res.json({ referrals });
+});
+
+router.post("/:id/referrals", authMiddleware, requireRole("office"), async (req, res) => {
+  const propertyId = req.params.id as string;
+  const referringOfficeId = req.user!.userId;
+  const { customerName, customerPhone, notes } = req.body as Record<string, string>;
+  if (!customerName?.trim() || !customerPhone?.trim()) {
+    res.status(400).json({ error: "اسم وهاتف الزبون مطلوبان" });
+    return;
+  }
+  const [property] = await db.select().from(networkPropertiesTable).where(eq(networkPropertiesTable.id, propertyId)).limit(1);
+  if (!property) {
+    res.status(404).json({ error: "العقار غير موجود" });
+    return;
+  }
+  const [referral] = await db
+    .insert(referralsTable)
+    .values({
+      id: randomUUID(),
+      propertyId,
+      referringOfficeId,
+      ownerOfficeId: property.officeId,
+      customerName: customerName.trim(),
+      customerPhone: customerPhone.trim(),
+      notes: typeof notes === "string" ? notes.trim().slice(0, 500) || null : null,
+    })
+    .returning();
+  await notifyNetwork({
+    recipientType: "office",
+    recipientId: property.officeId,
+    type: "referral",
+    title: "إحالة زبون جديدة",
+    body: `أحال مكتب آخر زبوناً (${customerName.trim()}) مهتماً بأحد عقاراتك.`,
+    link: "/office/network",
+  });
+  res.status(201).json(referral);
+});
+
+router.patch("/referrals/:id", authMiddleware, requireRole("office"), async (req, res) => {
+  const id = req.params.id as string;
+  const { status } = req.body as { status?: string };
+  const [referral] = await db.select().from(referralsTable).where(eq(referralsTable.id, id)).limit(1);
+  if (!referral || referral.ownerOfficeId !== req.user!.userId) {
+    res.status(404).json({ error: "الإحالة غير موجودة" });
+    return;
+  }
+  if (!status || !["completed", "cancelled"].includes(status)) {
+    res.status(400).json({ error: "حالة غير صالحة" });
+    return;
+  }
+  const [updated] = await db.update(referralsTable).set({ status }).where(eq(referralsTable.id, id)).returning();
+  if (status === "completed") {
+    await notifyNetwork({
+      recipientType: "office",
+      recipientId: referral.referringOfficeId,
+      type: "referral_completed",
+      title: "تم إتمام صفقة عبر إحالتك 🎉",
+      body: `مكافأتك ${referral.rewardAmount.toLocaleString("ar-IQ")} د.ع مقابل إحالة الزبون ${referral.customerName}.`,
+      link: "/office/network",
+    });
+  }
+  res.json(updated);
+});
+
+export default router;
+DALAL_FIX_EOF_9271_14602
+  ok "تم تحديث: $rel"
+}
+write_target_14602
+
+# --- dalal-app/src/pages/office-network.tsx ---
+write_target_31642() {
+  local rel="dalal-app/src/pages/office-network.tsx"; local abs="$ROOT/$rel"
+  mkdir -p "$(dirname "$abs")"
+  if [ -f "$abs" ] && [ ! -f "$abs.bak-dalal-fix" ]; then
+    cp "$abs" "$abs.bak-dalal-fix"
+    say "نسخة احتياطية: $rel.bak-dalal-fix"
+  fi
+  cat > "$abs" <<'DALAL_FIX_EOF_9271_31642'
+import { useEffect, useState } from "react";
+import { useLocation } from "wouter";
+import { Search, Handshake, UserPlus, Scale, Wrench, X, FileText } from "lucide-react";
+import { api, getUser, mediaUrl } from "@/lib/api";
+import { CITIES, formatPrice, formatSize, timeAgo } from "@/lib/utils";
+
+const CONTRACT_TYPE_AR: Record<string, string> = { sale: "بيع", rent_to_own: "إيجار تمليكي", inheritance: "إرث" };
+
+const TABS = [
+  { id: "browse", label: "عقارات الشبكة", icon: Search },
+  { id: "mediation", label: "الوساطة", icon: Handshake },
+  { id: "referrals", label: "الإحالات", icon: UserPlus },
+  { id: "lawyers", label: "المحامون", icon: Scale },
+  { id: "workshops", label: "الورش", icon: Wrench },
+];
+
+interface Property {
+  id: string; type: string; city: string; area?: string | null; price: number; size?: number | null; rooms?: number | null; images: string[];
+  source?: "network" | "listing"; officeId?: string | null; status?: string; title?: string | null; ownerName?: string | null;
+}
+
+const NP_STATUS_AR: Record<string, string> = { pending_audit: "قيد التدقيق", available: "متاح", pending: "قيد التفاوض", sold: "مباع" };
+interface MediationRequest {
+  id: string; propertyId: string; requestingOfficeId: string; ownerOfficeId: string; status: string; commissionAmount?: number | null; createdAt: string;
+}
+interface Referral {
+  id: string; propertyId: string; referringOfficeId: string; ownerOfficeId: string; customerName: string; customerPhone: string; status: string; rewardAmount: number; createdAt: string;
+}
+interface Lawyer {
+  id: string; name: string; phone: string; specialization: string; city: string; availability: string; rating: number; reviewCount: number;
+}
+interface Workshop {
+  id: string; name: string; specialty: string; phone: string; city: string; rating: number;
+}
+
+export default function OfficeNetworkPage() {
+  const [, navigate] = useLocation();
+  const [ready, setReady] = useState(false);
+  const [tab, setTab] = useState("browse");
+  const [officeId, setOfficeId] = useState("");
+  const [properties, setProperties] = useState<Property[]>([]);
+  const [mediations, setMediations] = useState<MediationRequest[]>([]);
+  const [referrals, setReferrals] = useState<Referral[]>([]);
+  const [lawyers, setLawyers] = useState<Lawyer[]>([]);
+  const [workshops, setWorkshops] = useState<Workshop[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [cityFilter, setCityFilter] = useState("");
+  const [referralTarget, setReferralTarget] = useState<Property | null>(null);
+  const [referralForm, setReferralForm] = useState({ customerName: "", customerPhone: "", notes: "" });
+  const [contractTarget, setContractTarget] = useState<Lawyer | null>(null);
+  const [contractForm, setContractForm] = useState({ contractType: "sale", parties: "", details: "" });
+  const [officeName, setOfficeName] = useState("");
+
+  useEffect(() => {
+    const u = getUser();
+    if (!u || u.role !== "office") { navigate("/office/login"); return; }
+    setOfficeId(u.userId);
+    setOfficeName(u.name || "");
+    setReady(true);
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!ready) return;
+    load();
+  }, [ready, tab, cityFilter]);
+
+  async function load() {
+    setLoading(true);
+    try {
+      if (tab === "browse") {
+        const q = cityFilter ? `?city=${encodeURIComponent(cityFilter)}` : "";
+        const d = await api.get<{ properties: { property: Property }[] }>(`/network-properties${q}`);
+        setProperties(d.properties.map((r) => r.property));
+      } else if (tab === "mediation") {
+        const d = await api.get<{ requests: MediationRequest[] }>("/network-properties/mediation/mine");
+        setMediations(d.requests);
+      } else if (tab === "referrals") {
+        const d = await api.get<{ referrals: Referral[] }>("/network-properties/referrals/mine");
+        setReferrals(d.referrals);
+      } else if (tab === "lawyers") {
+        const d = await api.get<{ lawyers: Lawyer[] }>("/lawyers");
+        setLawyers(d.lawyers);
+      } else if (tab === "workshops") {
+        const d = await api.get<{ workshops: Workshop[] }>("/workshops");
+        setWorkshops(d.workshops);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function requestMediation(propertyId: string) {
+    try {
+      await api.post(`/network-properties/${propertyId}/mediation-requests`, {});
+      alert("تم إرسال طلب الوساطة");
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "تعذر إرسال الطلب");
+    }
+  }
+
+  async function submitReferral(e: React.FormEvent) {
+    e.preventDefault();
+    if (!referralTarget) return;
+    try {
+      await api.post(`/network-properties/${referralTarget.id}/referrals`, referralForm);
+      setReferralTarget(null);
+      setReferralForm({ customerName: "", customerPhone: "", notes: "" });
+      alert("تم إرسال الإحالة، ستحصل على مكافأة عند إتمام الصفقة");
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "تعذر إرسال الإحالة");
+    }
+  }
+
+  async function submitContractRequest(e: React.FormEvent) {
+    e.preventDefault();
+    if (!contractTarget) return;
+    try {
+      await api.post("/contracts/requests", { ...contractForm, requesterName: officeName, lawyerId: contractTarget.id });
+      setContractTarget(null);
+      setContractForm({ contractType: "sale", parties: "", details: "" });
+      alert("تم إرسال طلب صياغة العقد للمحامي");
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "تعذر إرسال الطلب");
+    }
+  }
+
+  async function respondMediation(id: string, status: string) {
+    await api.patch(`/network-properties/mediation-requests/${id}`, { status });
+    load();
+  }
+
+  async function respondReferral(id: string, status: string) {
+    await api.patch(`/network-properties/referrals/${id}`, { status });
+    load();
+  }
+
+  const STATUS_AR: Record<string, string> = { pending: "قيد الانتظار", accepted: "مقبول", rejected: "مرفوض", completed: "مكتمل", cancelled: "ملغى" };
+
+  if (!ready) return null;
+
+  return (
+    <div className="max-w-4xl mx-auto px-4 py-6">
+      <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 mb-4">شبكة المكاتب</h1>
+
+      <div className="flex gap-1 overflow-x-auto mb-5 pb-1">
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button key={id} onClick={() => setTab(id)} className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition ${tab === id ? "bg-orange-500 text-white" : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"}`}>
+            <Icon className="w-4 h-4" /> {label}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="text-center text-gray-400 py-16">جاري التحميل...</div>
+      ) : tab === "browse" ? (
+        <>
+          <select value={cityFilter} onChange={(e) => setCityFilter(e.target.value)} className="border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded-xl px-3 py-2 text-sm mb-4">
+            <option value="">كل المحافظات</option>
+            {CITIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          {properties.length === 0 ? (
+            <div className="text-center text-gray-400 py-16">لا توجد عروض متاحة حالياً</div>
+          ) : (
+            <div className="grid sm:grid-cols-2 gap-4">
+              {properties.map((p) => {
+                const isListing = p.source === "listing";
+                const isMine = p.source === "network" && !!p.officeId && p.officeId === officeId;
+                const sourceLabel = isListing
+                  ? (p.ownerName ? `${p.ownerName}` : "إعلان فرد")
+                  : isMine
+                    ? "عقار مكتبك"
+                    : (p.ownerName ? `مكتب: ${p.ownerName}` : "شبكة المكاتب");
+                return (
+                <div key={`${p.source}-${p.id}`} className="bg-white dark:bg-gray-900 rounded-2xl overflow-hidden border border-gray-100 dark:border-gray-800">
+                  <div className="h-32 bg-gray-100 dark:bg-gray-800 relative">
+                    {p.images[0] && <img src={mediaUrl(p.images[0])} className="w-full h-full object-cover" />}
+                    <span className={`absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded-full font-medium ${isListing ? "bg-blue-500/90 text-white" : "bg-orange-500/90 text-white"}`}>{isListing ? "إعلان فرد" : "شبكة"}</span>
+                    {!isListing && p.status && p.status !== "available" && (
+                      <span className="absolute top-2 left-2 text-[11px] px-2 py-0.5 rounded-full font-medium bg-gray-800/80 text-white">{NP_STATUS_AR[p.status] || p.status}</span>
+                    )}
+                  </div>
+                  <div className="p-4">
+                    <p className="font-bold text-gray-800 dark:text-gray-100">{formatPrice(p.price)}</p>
+                    <p className="text-sm text-gray-400">{p.type} · {p.city}{p.size ? ` · ${formatSize(p.size)}` : ""}</p>
+                    <p className="text-xs text-gray-400 mt-1">{sourceLabel}</p>
+                    <div className="flex gap-2 mt-3">
+                      {isListing ? (
+                        <button onClick={() => navigate(`/listings/${p.id}`)} className="flex-1 text-xs bg-orange-50 dark:bg-orange-950 text-orange-600 dark:text-orange-400 py-2 rounded-lg font-medium hover:bg-orange-100 transition">عرض التفاصيل</button>
+                      ) : isMine ? (
+                        <span className="flex-1 text-center text-xs text-gray-400 py-2">عقار مكتبك</span>
+                      ) : (
+                        <>
+                          <button onClick={() => requestMediation(p.id)} className="flex-1 text-xs bg-orange-50 dark:bg-orange-950 text-orange-600 dark:text-orange-400 py-2 rounded-lg font-medium hover:bg-orange-100 transition">طلب وساطة</button>
+                          <button onClick={() => setReferralTarget(p)} className="flex-1 text-xs bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 py-2 rounded-lg font-medium hover:bg-blue-100 transition">إحالة زبون</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      ) : tab === "mediation" ? (
+        mediations.length === 0 ? <div className="text-center text-gray-400 py-16">لا توجد طلبات وساطة</div> : (
+          <div className="space-y-3">
+            {mediations.map((m) => {
+              const isOwner = m.ownerOfficeId === officeId;
+              return (
+                <div key={m.id} className="bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{isOwner ? "طلب وارد من مكتب آخر" : "طلبك على عقار مكتب آخر"}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{STATUS_AR[m.status]} · {timeAgo(m.createdAt)}</p>
+                  </div>
+                  {isOwner && m.status === "pending" && (
+                    <div className="flex gap-2">
+                      <button onClick={() => respondMediation(m.id, "accepted")} className="text-xs bg-emerald-50 text-emerald-600 px-3 py-1.5 rounded-lg font-medium">قبول</button>
+                      <button onClick={() => respondMediation(m.id, "rejected")} className="text-xs bg-red-50 text-red-600 px-3 py-1.5 rounded-lg font-medium">رفض</button>
+                    </div>
+                  )}
+                  {isOwner && m.status === "accepted" && (
+                    <button onClick={() => respondMediation(m.id, "completed")} className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg font-medium">إتمام</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : tab === "referrals" ? (
+        referrals.length === 0 ? <div className="text-center text-gray-400 py-16">لا توجد إحالات</div> : (
+          <div className="space-y-3">
+            {referrals.map((r) => {
+              const isOwner = r.ownerOfficeId === officeId;
+              return (
+                <div key={r.id} className="bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{r.customerName} · {r.customerPhone}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{STATUS_AR[r.status]} · مكافأة {r.rewardAmount.toLocaleString("ar-IQ")} د.ع · {timeAgo(r.createdAt)}</p>
+                  </div>
+                  {isOwner && r.status === "pending" && (
+                    <div className="flex gap-2">
+                      <button onClick={() => respondReferral(r.id, "completed")} className="text-xs bg-emerald-50 text-emerald-600 px-3 py-1.5 rounded-lg font-medium">إتمام</button>
+                      <button onClick={() => respondReferral(r.id, "cancelled")} className="text-xs bg-red-50 text-red-600 px-3 py-1.5 rounded-lg font-medium">إلغاء</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : tab === "lawyers" ? (
+        lawyers.length === 0 ? <div className="text-center text-gray-400 py-16">لا يوجد محامون معتمدون بعد</div> : (
+          <div className="grid sm:grid-cols-2 gap-4">
+            {lawyers.map((l) => (
+              <div key={l.id} className="bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800">
+                <div className="flex items-center justify-between">
+                  <p className="font-bold text-gray-800 dark:text-gray-100">{l.name}</p>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${l.availability === "available" ? "bg-emerald-50 text-emerald-600" : "bg-gray-100 text-gray-500"}`}>{l.availability === "available" ? "متاح" : "مشغول"}</span>
+                </div>
+                <p className="text-sm text-gray-400 mt-1">{l.specialization} · {l.city}</p>
+                <p className="text-xs text-gray-300 mt-1">تقييم {l.rating.toFixed(1)} ({l.reviewCount})</p>
+                <div className="flex gap-2 mt-3">
+                  <a href={`tel:${l.phone}`} className="flex-1 text-center text-xs bg-orange-50 dark:bg-orange-950 text-orange-600 dark:text-orange-400 py-2 rounded-lg font-medium">{l.phone}</a>
+                  <button onClick={() => setContractTarget(l)} className="flex-1 flex items-center justify-center gap-1 text-xs bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 py-2 rounded-lg font-medium hover:bg-blue-100 transition">
+                    <FileText className="w-3.5 h-3.5" /> طلب عقد
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      ) : (
+        workshops.length === 0 ? <div className="text-center text-gray-400 py-16">لا توجد ورش مسجلة بعد</div> : (
+          <div className="grid sm:grid-cols-2 gap-4">
+            {workshops.map((w) => (
+              <div key={w.id} className="bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800">
+                <p className="font-bold text-gray-800 dark:text-gray-100">{w.name}</p>
+                <p className="text-sm text-gray-400 mt-1">{w.specialty} · {w.city}</p>
+                <a href={`tel:${w.phone}`} className="block text-center mt-3 text-xs bg-orange-50 dark:bg-orange-950 text-orange-600 dark:text-orange-400 py-2 rounded-lg font-medium">{w.phone}</a>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {referralTarget && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setReferralTarget(null)}>
+          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-bold text-gray-800 dark:text-gray-100">إحالة زبون</h2>
+              <button onClick={() => setReferralTarget(null)}><X className="w-5 h-5 text-gray-400" /></button>
+            </div>
+            <form onSubmit={submitReferral} className="space-y-3">
+              <input value={referralForm.customerName} onChange={(e) => setReferralForm({ ...referralForm, customerName: e.target.value })} placeholder="اسم الزبون" required className="w-full border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded-xl px-3 py-2.5 text-sm" />
+              <input value={referralForm.customerPhone} onChange={(e) => setReferralForm({ ...referralForm, customerPhone: e.target.value })} placeholder="هاتف الزبون" required className="w-full border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded-xl px-3 py-2.5 text-sm" />
+              <textarea value={referralForm.notes} onChange={(e) => setReferralForm({ ...referralForm, notes: e.target.value })} placeholder="ملاحظات" rows={2} className="w-full border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded-xl px-3 py-2.5 text-sm" />
+              <button type="submit" className="w-full bg-orange-500 text-white py-3 rounded-xl font-bold hover:bg-orange-600 transition text-sm">إرسال الإحالة</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {contractTarget && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setContractTarget(null)}>
+          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-bold text-gray-800 dark:text-gray-100">طلب صياغة عقد — {contractTarget.name}</h2>
+              <button onClick={() => setContractTarget(null)}><X className="w-5 h-5 text-gray-400" /></button>
+            </div>
+            <form onSubmit={submitContractRequest} className="space-y-3">
+              <select value={contractForm.contractType} onChange={(e) => setContractForm({ ...contractForm, contractType: e.target.value })} className="w-full border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded-xl px-3 py-2.5 text-sm">
+                {Object.entries(CONTRACT_TYPE_AR).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+              <input value={contractForm.parties} onChange={(e) => setContractForm({ ...contractForm, parties: e.target.value })} placeholder="أطراف العقد" className="w-full border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded-xl px-3 py-2.5 text-sm" />
+              <textarea value={contractForm.details} onChange={(e) => setContractForm({ ...contractForm, details: e.target.value })} placeholder="تفاصيل إضافية" rows={2} className="w-full border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded-xl px-3 py-2.5 text-sm" />
+              <button type="submit" className="w-full bg-orange-500 text-white py-3 rounded-xl font-bold hover:bg-orange-600 transition text-sm">إرسال الطلب</button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+DALAL_FIX_EOF_9271_31642
+  ok "تم تحديث: $rel"
+}
+write_target_31642
+
+
+ok "اكتمل الإصلاح بنجاح."
+say "أعد البناء ثم التشغيل:"
+say "  pnpm --filter @workspace/api-server run build"
+say "  pnpm --filter @workspace/dalal-app  run build"
+say "  ./run-local.sh"
